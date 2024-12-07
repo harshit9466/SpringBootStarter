@@ -1,4 +1,4 @@
-package com.DemoWebProject;
+package com.SpringBootStarter;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

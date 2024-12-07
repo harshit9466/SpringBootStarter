@@ -1,4 +1,4 @@
-package com.DemoWebProject.exception;
+package com.SpringBootStarter.exception;
 
 import java.io.Serializable;
 

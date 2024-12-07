@@ -1,14 +1,14 @@
 // src/main/java/com/example/repository/ProductRepository.java
 
-package com.DemoWebProject.repository;
-
-import com.DemoWebProject.model.Product;
+package com.SpringBootStarter.repository;
 
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+
+import com.SpringBootStarter.model.Product;
 
 public interface ProductRepository extends JpaRepository<Product, Long> {
 //    @Query(nativeQuery = true, value = "SELECT ... your entire SQL query ...")

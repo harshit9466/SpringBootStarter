@@ -1,4 +1,4 @@
-package com.DemoWebProject.util;
+package com.SpringBootStarter.util;
 
 import org.springframework.http.HttpStatus;
 

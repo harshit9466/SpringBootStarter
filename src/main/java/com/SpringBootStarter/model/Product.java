@@ -1,6 +1,6 @@
 // src/main/java/com/example/model/Product.java
 
-package com.DemoWebProject.model;
+package com.SpringBootStarter.model;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

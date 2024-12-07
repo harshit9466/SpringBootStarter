@@ -1,15 +1,16 @@
 // src/main/java/com/example/service/ProductServiceImpl.java
 
-package com.DemoWebProject.service;
+package com.SpringBootStarter.service;
 
-import com.DemoWebProject.exception.ProductNotFoundException;
-import com.DemoWebProject.model.Product;
-import com.DemoWebProject.repository.ProductRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Service;
+
+import com.SpringBootStarter.exception.ProductNotFoundException;
+import com.SpringBootStarter.model.Product;
+import com.SpringBootStarter.repository.ProductRepository;
 
 import java.util.List;
 import java.util.Optional;

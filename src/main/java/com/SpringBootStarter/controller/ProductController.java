@@ -1,11 +1,6 @@
 // src/main/java/com/example/controller/ProductController.java
 
-package com.DemoWebProject.controller;
-
-import com.DemoWebProject.model.Product;
-import com.DemoWebProject.service.ProductService;
-import com.DemoWebProject.util.ApiResponse;
-import com.DemoWebProject.util.ResponseDetails;
+package com.SpringBootStarter.controller;
 
 import jakarta.validation.Valid;
 
@@ -16,6 +11,11 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import com.SpringBootStarter.model.Product;
+import com.SpringBootStarter.service.ProductService;
+import com.SpringBootStarter.util.ApiResponse;
+import com.SpringBootStarter.util.ResponseDetails;
 
 import java.util.HashMap;
 import java.util.List;
@@ -42,6 +42,11 @@ public class ProductController {
     //or this below way is also doing the same thing 
 //    @RequestMapping(path = "/home", method = RequestMethod.GET)
     public String Home() {
+    	logger.info("This is a api call");
+    	logger.debug("This is a debug api call");
+    	logger.error("this is a error");
+    	logger.warn("This is warn");
+    	logger.trace("This is a trace message");
         return "This is Home.";
     }
     
