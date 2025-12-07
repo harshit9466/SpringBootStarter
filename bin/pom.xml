@@ -4,11 +4,11 @@
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 
-	<groupId>com.DemoWebProject</groupId>
-	<artifactId>DemoWebProject</artifactId>
+	<groupId>com.SpringBootStarter</groupId>
+	<artifactId>SpringBootStarter</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>DemoWebProject</name>
-	<description>DemoWebProject for Spring Boot</description>
+	<name>SpringBootStarter</name>
+	<description>Fully configured Spring Boot Project</description>
 
 	<parent>
 		<groupId>org.springframework.boot</groupId>
