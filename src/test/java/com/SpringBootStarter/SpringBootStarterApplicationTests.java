@@ -1,10 +1,10 @@
-package com.DemoWebProject;
+package com.SpringBootStarter;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class DemoWebProjectApplicationTests {
+class SpringBootStarterApplicationTests {
 
 	@Test
 	void contextLoads() {
