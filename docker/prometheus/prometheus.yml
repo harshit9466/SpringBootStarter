@@ -1,0 +1,65 @@
+# =============================================================================
+# PROMETHEUS SCRAPE CONFIGURATION
+# =============================================================================
+# Prometheus Pull Model: Prometheus khud targets ko scrape karta hai.
+# Har target ek HTTP endpoint expose karta hai (our: /actuator/prometheus).
+# Prometheus is file ko read karke targets discover karta hai.
+# =============================================================================
+
+global:
+  # scrape_interval: Kitne time baad Prometheus har target ko scrape kare.
+  # Default: 1m. 15s production standard hai.
+  # WHY 15s: Enough granularity for alerting (< 1min detection) without
+  #          overwhelming the target with HTTP requests.
+  scrape_interval: 15s
+
+  # evaluation_interval: Kitne time baad alerting rules evaluate hon.
+  # Should match scrape_interval typically.
+  evaluation_interval: 15s
+
+  # external_labels: Jab Prometheus apna data kisi remote storage ya
+  # Alertmanager ko bhejta hai, yeh labels automatically attach ho jaate hain.
+  # WHY: Multi-cluster setup mein, Grafana ko pata chale ki data kis
+  #      Prometheus instance se aa raha hai.
+  external_labels:
+    cluster: 'local-dev'
+    environment: 'development'
+
+# =============================================================================
+# SCRAPE CONFIGURATIONS — Yahan define karo ki kya scrape karna hai
+# =============================================================================
+scrape_configs:
+
+  # -------------------------------------------------------------------
+  # Job 1: Prometheus itself
+  # Prometheus apne aap ko bhi scrape karta hai — useful for:
+  # - Monitoring how many targets Prometheus is scraping
+  # - Alerting if Prometheus itself is slow or missing scrapes
+  # -------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # -------------------------------------------------------------------
+  # Job 2: Our Spring Boot Application
+  # -------------------------------------------------------------------
+  - job_name: 'spring-boot-starter'
+
+    # Metrics path: Spring Boot Actuator ka Prometheus endpoint
+    # Without this, Prometheus default /metrics path pe jaayega.
+    # Spring Boot default: /actuator/prometheus
+    metrics_path: '/actuator/prometheus'
+
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+    static_configs:
+      # host.docker.internal: Docker container se host machine access karne ka
+      # special DNS name. Windows/Mac pe automatically resolves hota hai.
+      # WHY NOT localhost: Prometheus container ke andar 'localhost' = container
+      #                    itself, not host machine. Spring Boot host pe chal
+      #                    raha hai — isliye host.docker.internal use karo.
+      - targets: ['host.docker.internal:8082']
+        labels:
+          service: 'spring-boot-starter'
+          team: 'backend'

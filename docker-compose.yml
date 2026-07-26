@@ -1,0 +1,124 @@
+# =============================================================================
+# DOCKER COMPOSE — Local Observability Stack
+# =============================================================================
+# Yeh compose file spin up karta hai:
+#   1. Prometheus  (port 9090) — Metrics collection & PromQL
+#   2. Grafana     (port 3000) — Dashboards & Alerting (Module 6 mein use)
+#
+# Spring Boot app is compose mein NAHI hai — host pe seedha chalta rahega.
+# WHY: Development mein Spring Boot restart karana fast hota hai bina Docker ke.
+#      Prometheus + Grafana stable infra hain, inhe containerize karo.
+#
+# USAGE:
+#   Start:  docker-compose up -d
+#   Stop:   docker-compose down
+#   Logs:   docker-compose logs -f prometheus
+# =============================================================================
+
+version: '3.8'
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PROMETHEUS — Time-Series Database + Scraper
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    restart: unless-stopped
+
+    ports:
+      # 9090: Prometheus UI + API (http://localhost:9090)
+      - "9090:9090"
+
+    volumes:
+      # Mount our custom scrape config into the container.
+      # :ro = read-only (container cannot modify it — good practice).
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+      # Named volume for TSDB data persistence.
+      # WHY named volume: docker-compose down karoge to data safe rahega.
+      # Without this: every restart = fresh Prometheus, no historical data.
+      - prometheus_data:/prometheus
+
+    command:
+      # --config.file: Custom config location (we mounted it above)
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+      # --storage.tsdb.path: TSDB data directory inside container
+      - '--storage.tsdb.path=/prometheus'
+
+      # --storage.tsdb.retention.time: Kitne din ka data rakhna hai.
+      # Default: 15d. Hum 7d rakh rahe hain dev mein (disk save karo).
+      - '--storage.tsdb.retention.time=7d'
+
+      # --web.enable-lifecycle: Allows hot-reload of config via HTTP POST.
+      # curl -X POST http://localhost:9090/-/reload
+      # WHY: Scrape config change karo bina restart ke.
+      - '--web.enable-lifecycle'
+
+      # --web.console.libraries and --web.console.templates:
+      # Built-in Prometheus console templates (basic dashboards)
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+
+    networks:
+      - observability
+
+    extra_hosts:
+      # host.docker.internal: Linux containers ke liye yeh manually add karna padta hai.
+      # Windows/Mac Docker Desktop pe automatic hota hai, but Linux pe nahi.
+      # Adds host-gateway as host.docker.internal DNS entry.
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------------------
+  # GRAFANA — Visualization & Dashboards (Module 6 mein configure karenge)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    restart: unless-stopped
+
+    ports:
+      # 3000: Grafana UI (http://localhost:3000)
+      - "3000:3000"
+
+    environment:
+      # Default admin credentials (change in production!)
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+      # Disable Grafana's own signup page
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+    volumes:
+      # Named volume for Grafana data (dashboards, users, settings)
+      - grafana_data:/var/lib/grafana
+
+      # Module 6 mein yeh provisioning folders add karenge:
+      # - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+
+    depends_on:
+      - prometheus
+
+    networks:
+      - observability
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  observability:
+    # bridge: Default Docker network mode.
+    # Containers is network pe ek doosre ko container name se resolve kar sakte hain.
+    # e.g., Grafana Prometheus ko "prometheus:9090" se access karta hai.
+    driver: bridge
+
+# =============================================================================
+# VOLUMES — Named volumes persist data across docker-compose down/up
+# =============================================================================
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
