@@ -4,6 +4,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -15,6 +17,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 
 @ControllerAdvice
 public class GlobalControllerExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalControllerExceptionHandler.class);
 
 //    @ResponseStatus(HttpStatus.CONFLICT)
 //    @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -93,7 +97,7 @@ public class GlobalControllerExceptionHandler {
     }
     
     private ResponseEntity<Map<String, Object>> buildErrorResponse(HttpStatus status, String error, Exception ex) {
-        ex.printStackTrace(); // Log the exception for debugging purposes
+        log.error("Unhandled exception. status={}, error={}", status.value(), ex.getMessage(), ex);
 
         Map<String, Object> response = new HashMap<>();
         response.put("message", error);

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- ================================================================
+         PROPERTY DEFINITIONS
+         spring.application.name is set in application.properties
+    ================================================================ -->
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="app"/>
+
+    <!-- ================================================================
+         DEV PROFILE — Human-readable console output
+         Pattern includes: time | level (padded) | traceId | thread | logger | message
+    ================================================================ -->
+    <springProfile name="dev">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>
+                    %d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%cyan(${APP_NAME})] [traceId=%X{traceId}] [%thread] %logger{40} - %msg%n%ex
+                </pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+
+        <!-- Enable DEBUG for our own code only — not Spring internals -->
+        <logger name="com.SpringBootStarter" level="DEBUG" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+        </logger>
+    </springProfile>
+
+    <!-- ================================================================
+         PROD PROFILE — Structured JSON output for Loki / Elasticsearch
+         Every log line is a valid JSON object.
+         DevOps ingests this via Fluent Bit / Filebeat.
+    ================================================================ -->
+    <springProfile name="prod">
+
+        <!-- Async wrapper: application thread puts event in queue and returns
+             immediately. Background I/O thread drains queue and writes to file. -->
+        <appender name="ASYNC_JSON_FILE" class="ch.qos.logback.classic.AsyncAppender
+            <queueSize>2048</queueSize>
+            <!-- 0 = never silently drop logs even when queue is near full.
+                 Default is 20 which drops INFO/DEBUG when queue is 80% full — dangerous during incidents. -->
+            <discardingThreshold>0</discardingThreshold>
+            <appender-ref ref="JSON_FILE"/>
+        </appender>
+
+        <appender name="JSON_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>logs/${APP_NAME}.log</file>
+
+            <!-- Daily rollover, keep 30 days, max 1GB total -->
+            <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+                <fileNamePattern>logs/${APP_NAME}.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Add service name to every log line — critical for multi-service setups -->
+                <customFields>{"service":"${APP_NAME}"}</customFields>
+
+                <!-- Include MDC fields (traceId, citizenId, etc.) as top-level JSON fields -->
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>citizenId</includeMdcKeyName>
+                <includeMdcKeyName>district</includeMdcKeyName>
+                <includeMdcKeyName>requestId</includeMdcKeyName>
+                <includeMdcKeyName>userId</includeMdcKeyName>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON_FILE"/>
+        </root>
+
+        <!-- Suppress noisy Spring internal logs in prod -->
+        <logger name="org.springframework" level="WARN"/>
+        <logger name="org.hibernate"       level="WARN"/>
+        <logger name="com.zaxxer.hikari"   level="WARN"/>
+    </springProfile>
+
+</configuration>
