@@ -6,8 +6,6 @@ import jakarta.validation.Valid;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,17 +13,14 @@ import org.springframework.web.bind.annotation.*;
 import com.SpringBootStarter.model.Product;
 import com.SpringBootStarter.service.ProductService;
 import com.SpringBootStarter.util.ApiResponse;
-import com.SpringBootStarter.util.ResponseDetails;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/products")
 public class ProductController {
 
-	private Logger logger = LoggerFactory.getLogger(ProductController.class);
+    private static final Logger log = LoggerFactory.getLogger(ProductController.class);
 	
     private final ProductService productService;
 
@@ -41,18 +36,16 @@ public class ProductController {
     @GetMapping("/home")
     //or this below way is also doing the same thing 
 //    @RequestMapping(path = "/home", method = RequestMethod.GET)
-    public String Home() {
-    	logger.info("This is a api call");
-    	logger.debug("This is a debug api call");
-    	logger.error("this is a error");
-    	logger.warn("This is warn");
-    	logger.trace("This is a trace message");
+    public String home() {
+        log.info("Health check endpoint called");
         return "This is Home.";
     }
     
     @GetMapping
     public ApiResponse getAllProducts() {
+        log.info("Fetching all products");
     	List<Product> products = productService.getAllProducts();
+        log.debug("Returning {} products", products.size());
     	
         ApiResponse response = ApiResponse.builder()
         								  .data(products)
@@ -60,11 +53,11 @@ public class ProductController {
         								  .message("All products")
         								  .build();
         return response;
-//      return productService.getAllProducts();
     }
 
     @GetMapping("/{id}")
-    public ApiResponse getProductById(@PathVariable Long id) {     	
+    public ApiResponse getProductById(@PathVariable Long id) {
+        log.info("Fetching product. productId={}", id);
     	Product product = productService.getProductById(id);
     	
         ApiResponse response = ApiResponse.builder()
@@ -73,7 +66,6 @@ public class ProductController {
         								  .message("Product details")
         								  .build();
         return response;
-//      return productService.getProductById(id);
     }
 
 //    @PostMapping //By Default the endpoint consumes and produces JSON.
@@ -89,45 +81,45 @@ public class ProductController {
 //    }
     
     @PostMapping
-    public  ResponseEntity<ApiResponse> saveProductWithCustomResponse(@RequestBody Product product) {
+    public  ResponseEntity<ApiResponse> saveProduct(@RequestBody Product product) {
+        log.info("Creating product. name={}", product.getName());
     	Product addedProduct = productService.saveProduct(product);
+        log.info("Product created successfully. productId={}, name={}", addedProduct.getId(), addedProduct.getName());
     	
         ApiResponse response = ApiResponse.builder()
         								  .data(addedProduct)
-        								  .httpStatusCode(HttpStatus.OK)
+        								  .httpStatusCode(HttpStatus.CREATED)
         								  .message("Product added successfully")
         								  .build();
     	
-      //To check if the global exception handler is working use this or if you want to create a exception for a reason and send to the global exception handler instead of handling it locally here.
-//    	throw new DataIntegrityViolationException("Simulated data integrity violation");
-
-        return new ResponseEntity<>(response, HttpStatus.OK);
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
  
   @PutMapping("/{id}")
   public ResponseEntity<ApiResponse> updateProduct(@PathVariable Long id, @Valid @RequestBody Product updatedProduct) {
+      log.info("Updating product. productId={}", id);
       Product product = productService.updateProduct(id, updatedProduct);
+      log.info("Product updated successfully. productId={}", id);
 
       ApiResponse response = ApiResponse.builder()
               							.data(product)
               							.httpStatusCode(HttpStatus.OK)
               							.message("Product updated successfully")
               							.build();
-//      ApiResponse response = ApiResponse.success(product);
 
       return new ResponseEntity<>(response, HttpStatus.OK);
-//      return productService.updateProduct(id, updatedProduct);
   }
 
     @DeleteMapping("/{id}")
-    public ApiResponse deleteProduct(@PathVariable Long id) {  		
+    public ApiResponse deleteProduct(@PathVariable Long id) {
+        log.info("Deleting product. productId={}", id);
   		productService.deleteProduct(id);
+        log.info("Product deleted successfully. productId={}", id);
     	
         ApiResponse response = ApiResponse.builder()
         								  .httpStatusCode(HttpStatus.OK)
         								  .message("Product deleted successfully")
         								  .build();
         return response;
-//        productService.deleteProduct(id);
     }
 }
