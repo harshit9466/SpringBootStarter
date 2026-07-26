@@ -183,7 +183,7 @@ spring.profiles.active=dev
 #      your own logs become impossible to find. Always keep root at INFO in dev.
 #
 # ADAPT FOR YOUR PROJECT: Replace "com.yourpackage" with your actual base package.
-#      Example: logging.level.com.biharone.certificate=DEBUG
+#      Example: logging.level.com.example.myservice=DEBUG
 
 logging.level.root=INFO
 logging.level.com.yourpackage=DEBUG
@@ -305,8 +305,8 @@ spring.jpa.open-in-view=false
 
                     %logger{40}
                         → Fully qualified class name of the Logger, truncated to 40 chars.
-                          Example: com.biharone.certificate.CertificateService
-                          becomes: c.b.c.CertificateService (abbreviated).
+                          Example: com.example.myservice.OrderService
+                          becomes: c.e.m.OrderService (abbreviated).
                           WHY 40: Balance between readability and line length.
 
                     %msg
@@ -359,7 +359,7 @@ spring.jpa.open-in-view=false
 
             ADAPT FOR YOUR PROJECT: Replace "com.yourpackage" with:
             - MVC project:       com.example.myapp
-            - Hexagonal project: com.biharone.certificate (the domain package)
+            - Hexagonal project: com.example.myapp.domain (the domain package)
             - Multi-module:      com.example (covers all sub-packages)
         -->
         <logger name="com.yourpackage" level="DEBUG" additivity="false">

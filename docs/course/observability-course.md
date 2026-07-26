@@ -10,15 +10,15 @@
 | Module | Topic | Status |
 |--------|-------|--------|
 | 1 | [Observability Fundamentals](#module-1--observability-fundamentals) | ✅ |
-| 2 | Java Logging Architecture | 🔜 |
-| 3 | Spring Boot Actuator | 🔜 |
-| 4 | Micrometer | 🔜 |
-| 5 | Prometheus | 🔜 |
-| 6 | Grafana | 🔜 |
-| 7 | Logging Infrastructure | 🔜 |
-| 8 | Distributed Tracing | 🔜 |
-| 9 | Production Architecture | 🔜 |
-| 10 | Production Readiness | 🔜 |
+| 2 | [Java Logging Architecture](#module-2--java-logging-architecture) | ✅ |
+| 3 | [Spring Boot Actuator](#module-3--spring-boot-actuator) | ✅ |
+| 4 | [Micrometer](#module-4--micrometer) | ✅ |
+| 5 | [Prometheus](#module-5--prometheus) | ✅ |
+| 6 | [Grafana](#module-6--grafana) | ⏳ |
+| 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ⏳ |
+| 8 | [Distributed Tracing](#module-8--distributed-tracing) | ⏳ |
+| 9 | [Production Architecture](#module-9--production-architecture) | ⏳ |
+| 10 | [Production Readiness](#module-10--production-readiness) | ⏳ |
 
 ---
 
@@ -1361,9 +1361,277 @@ Average pe nahi — p95 pe. Kyunki average hide kar deta hai tail latency.
 
 ---
 
-## Module 5 — Prometheus
+## Module 5 — Prometheus: TSDB, Scraping & PromQL
 
-> _Content to be added_
+### 5.1 Pull Model vs Push Model — WHY Prometheus Pull Use Karta Hai?
+
+Yeh ek fundamental design decision hai. Samajhte hain **real-world analogy** se:
+
+> **Push model** = Patient khud doctor ko call karta hai aur apni heartbeat batataa hai. Agar patient busy hai, beemar hai, ya network down hai — doctor ko pata hi nahi chala.
+>
+> **Pull model** = Doctor khud patient ke paas aata hai aur check karta hai. Doctor control mein hai — woh decide karta hai KAB check karna hai, KITNI baar karna hai.
+
+| Dimension | Pull (Prometheus) | Push (e.g. StatsD, InfluxDB) |
+|---|---|---|
+| **Control** | Scraper controls timing | App controls timing |
+| **Service Discovery** | Centralized in prometheus.yml | Distributed — every app needs target URL |
+| **Network Failure** | Prometheus detects "target down" automatically | Metrics silently disappear — no detection |
+| **Back-pressure** | Prometheus slows down naturally | App can flood the metrics server |
+| **Security** | One-directional — app exposes read-only endpoint | App needs write access to central server |
+| **Debugging** | `curl /actuator/prometheus` — human readable! | Can't easily inspect what's being sent |
+
+**WHY Pull is better for microservices:** Agar 50 services hain aur 3 metrics servers hain, Push model mein har service ko teen servers ke addresses pata hone chahiye. Pull mein sirf Prometheus ko service ka address pata hona chahiye — service completely unaware hai ki kaun usse scrape kar raha hai.
+
+#### Kab PushGateway Use Karte Hain?
+
+Pull model ka ek genuine weakness hai: **short-lived jobs** (cron jobs, batch jobs). Ek job jo 30 seconds mein complete ho jaaye — Prometheus usse kabhi scrape nahi kar sakta (default 15s interval se pehle job khatam).
+
+**Solution: PushGateway** — job apne metrics PushGateway ko push karta hai, Prometheus PushGateway ko scrape karta hai.
+
+```
+Batch Job → push → PushGateway ← scrape ← Prometheus
+```
+
+**Caution:** PushGateway ek anti-pattern ban jaata hai agar long-running services ke liye use karo. Metrics stale ho jaate hain lekin Prometheus ko pata nahi chalta ki service down hai ya sirf idle hai.
+
+---
+
+### 5.2 Prometheus TSDB (Time-Series Database) Internals
+
+#### Data Model — Har Metric Ek Time Series Hai
+
+```
+metric_name{label1="val1", label2="val2"} value timestamp
+```
+
+Real example jo humara Spring Boot app expose karta hai:
+```
+http_server_requests_seconds_count{
+  application="spring-boot-starter",
+  method="GET",
+  status="200",
+  uri="/api/products"
+} 1547 1722000000000
+```
+
+Yeh ek **unique time series** hai. Labels ki different combinations = different time series.
+
+#### HIGH CARDINALITY — OOM Ka Seedha Raasta
+
+```
+# BAD — userId label = millions of unique series = Prometheus OOM crash
+http_requests_total{userId="user_12345"} 1
+
+# GOOD — fixed, bounded set of label values
+http_requests_total{status="200", method="GET"} 1547
+```
+
+Rule: Ek label ke possible values **< 100** hone chahiye. Status codes (200, 404, 500), HTTP methods (GET, POST) — safe hain. User IDs, request IDs, timestamps labels mein — kabhi nahi.
+
+#### TSDB Storage Architecture
+
+Prometheus data disk pe **2-hour immutable blocks** mein store karta hai:
+
+```
+data/
+├── 01BZJ0Q2CQJKZ2M3X9ZKJ9XS/   ← Block (2-hour window of data)
+│   ├── chunks/
+│   │   └── 000001               ← Gorilla-compressed time series data
+│   ├── index                    ← Label index for fast lookups
+│   ├── meta.json                ← Block metadata (min/max time)
+│   └── tombstones               ← Soft-deletes (for delete API)
+└── wal/                         ← Write-Ahead Log
+    └── 00000001                 ← In-memory data → WAL → block (on flush)
+```
+
+**WAL (Write-Ahead Log):** Naye data pehle WAL mein jaata hai (fast sequential write). Har 2 ghante baad WAL ko compress karke immutable block bana deta hai. Crash hone par WAL se recovery hoti hai — no data loss.
+
+**Gorilla Compression:** Delta-encoding timestamps + XOR encoding values. Result:
+- Uncompressed: ~12 bytes per sample
+- Compressed: ~1.3 bytes per sample (**~90% compression ratio**)
+
+**Retention:** Default 15 days. Production mein 30-90 days common hai.
+```yaml
+# docker-compose.yml mein
+- '--storage.tsdb.retention.time=30d'
+```
+
+---
+
+### 5.3 PromQL — Prometheus Query Language
+
+#### 4 Metric Types — Foundation
+
+```
+# 1. Counter — sirf badhta hai, restart pe reset
+products_created_total{application="spring-boot-starter"} 1547
+
+# 2. Gauge — current value, up/down jaata hai
+jvm_memory_used_bytes{area="heap"} 104857600
+
+# 3. Histogram — request latency distribution in buckets
+http_server_requests_seconds_bucket{le="0.1"}  800   ← 800 requests finished < 100ms
+http_server_requests_seconds_bucket{le="0.5"}  950   ← 950 requests finished < 500ms
+http_server_requests_seconds_bucket{le="+Inf"} 1000  ← total 1000 requests
+http_server_requests_seconds_sum               120.5  ← total seconds spent
+http_server_requests_seconds_count             1000
+
+# 4. Summary — pre-computed percentiles (client-side)
+product_operation_duration_seconds{quantile="0.95"} 0.234
+```
+
+**Histogram vs Summary:**
+- **Histogram** = Server (Prometheus) computes percentiles from buckets → aggregatable across replicas ✅
+- **Summary** = Client (JVM) pre-computes percentiles → NOT aggregatable across replicas ❌
+- Always prefer Histogram for services with multiple replicas.
+
+#### `rate()` vs `irate()` — Sabse Common Confusion
+
+**Real-world analogy:** `rate()` = trip ki average speed (smooth). `irate()` = GPS speedometer (instantaneous, spiky).
+
+```promql
+# rate() — average per-second rate over 5 minutes (smooth, good for alerts)
+rate(products_created_total[5m])
+
+# irate() — rate between last 2 data points only (spiky, good for debugging)
+irate(products_created_total[5m])
+```
+
+**Rule of thumb:**
+- **Alerts ke liye:** `rate()` — ek spike se false alert fire nahi hoga
+- **Live debugging dashboards:** `irate()` — recent change immediately dikhta hai
+
+**Range window select karne ka formula:**
+> Window >= **4x scrape interval**. Agar scrape 15s hai → minimum `[1m]`. Production standard: `[5m]`.
+
+#### `histogram_quantile()` — P95/P99 Live Calculate Karna
+
+```promql
+# P95 latency for all HTTP endpoints
+histogram_quantile(
+  0.95,
+  sum by (le, uri) (
+    rate(http_server_requests_seconds_bucket[5m])
+  )
+)
+```
+
+**WHY `sum by (le)` zaroori hai?** Agar 3 replicas hain, teen alag histogram bucket series hain. `sum by (le)` unhe merge karta hai — tabhi `histogram_quantile` mathematically correct answer deta hai.
+
+#### Error Rate — BiharOne SLA Monitoring
+
+```promql
+# 5xx error rate as percentage of total requests (last 5 min)
+100 * (
+  sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+  /
+  sum(rate(http_server_requests_seconds_count[5m]))
+)
+```
+
+```promql
+# Alert condition: trigger if error rate > 1%
+100 * (
+  sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+  /
+  sum(rate(http_server_requests_seconds_count[5m]))
+) > 1
+```
+
+#### Essential PromQL Cheatsheet
+
+| Function | Use Case | Example |
+|---|---|---|
+| `rate(counter[5m])` | Per-second rate (smooth) | `rate(products_created_total[5m])` |
+| `irate(counter[5m])` | Instantaneous rate | `irate(http_requests_total[5m])` |
+| `increase(counter[1h])` | Total increase in window | `increase(products_created_total[1h])` |
+| `histogram_quantile(φ, buckets)` | P50/P95/P99 from histogram | `histogram_quantile(0.99, rate(...bucket[5m]))` |
+| `sum by (label)` | Group and aggregate | `sum by (status) (rate(...))` |
+| `topk(N, metric)` | Top N series by value | `topk(5, rate(http_requests[5m]))` |
+| `predict_linear(gauge[1h], 3600)` | Linear prediction (disk full?) | `predict_linear(disk_free[1h], 86400)` |
+| `absent(metric)` | Alert if metric disappears | `absent(up{job="spring-boot-starter"})` |
+
+---
+
+### 5.4 Practical Setup — Prometheus + Grafana Locally
+
+#### Files Created:
+
+```
+docker/
+└── prometheus/
+    └── prometheus.yml      ← Scrape config (target: our Spring Boot on :8082)
+docker-compose.yml          ← Prometheus :9090 + Grafana :3000
+```
+
+#### Step 1: Spring Boot App Start Karo
+
+```bash
+# Ensure app is running on port 8082
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+
+# Verify metrics endpoint is live:
+curl http://localhost:8082/actuator/prometheus | head -30
+```
+
+#### Step 2: Prometheus + Grafana Start Karo
+
+```bash
+docker-compose up -d
+```
+
+#### Step 3: Prometheus UI Explore Karo
+
+Open: `http://localhost:9090`
+
+**Targets check karo:** `http://localhost:9090/targets`
+- `spring-boot-starter` ka status `UP` dikhna chahiye
+- Last scrape time aur duration visible hai
+
+**Try these queries in Graph tab:**
+
+```promql
+# 1. Check app is up
+up{job="spring-boot-starter"}
+
+# 2. JVM heap usage in MB
+jvm_memory_used_bytes{area="heap", application="spring-boot-starter"} / 1024 / 1024
+
+# 3. HTTP request rate (last 5 min)
+rate(http_server_requests_seconds_count{application="spring-boot-starter"}[5m])
+
+# 4. P95 latency per endpoint
+histogram_quantile(0.95,
+  sum by (le, uri) (
+    rate(http_server_requests_seconds_bucket{application="spring-boot-starter"}[5m])
+  )
+)
+
+# 5. Our custom product counter
+products_created_total{application="spring-boot-starter"}
+
+# 6. Active HTTP connections
+tomcat_connections_active_current_connections
+```
+
+#### Step 4: Grafana Connect Karo (Preview — Module 6 mein detail)
+
+Open: `http://localhost:3000` (admin/admin)
+
+Add Prometheus data source:
+- URL: `http://prometheus:9090` (container name, not localhost!)
+- Save & Test → "Data source is working"
+
+---
+
+### 5.5 Key Takeaways
+
+1. **Pull model** gives Prometheus centralized control + automatic "target down" detection.
+2. **PushGateway** sirf short-lived jobs ke liye — long-running services ke liye never use karo.
+3. **TSDB** 2-hour immutable blocks + Gorilla compression = ~90% space savings.
+4. **Labels** power hai — lekin high cardinality (userId, requestId) = OOM death.
+5. **`rate()` for alerts, `irate()` for debugging** — dono ka range window >= 4x scrape interval.
+6. **`histogram_quantile()` + `sum by (le)`** = correct cross-replica percentiles.
 
 ---
 
