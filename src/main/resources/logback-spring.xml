@@ -39,7 +39,7 @@
 
         <!-- Async wrapper: application thread puts event in queue and returns
              immediately. Background I/O thread drains queue and writes to file. -->
-        <appender name="ASYNC_JSON_FILE" class="ch.qos.logback.classic.AsyncAppender
+        <appender name="ASYNC_JSON_FILE" class="ch.qos.logback.classic.AsyncAppender">
             <queueSize>2048</queueSize>
             <!-- 0 = never silently drop logs even when queue is near full.
                  Default is 20 which drops INFO/DEBUG when queue is 80% full — dangerous during incidents. -->

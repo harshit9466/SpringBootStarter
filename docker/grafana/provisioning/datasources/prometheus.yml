@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    # "prometheus" = container name on the observability Docker network.
+    # Grafana container sees Prometheus by its service name, not localhost.
+    url: http://prometheus:9090
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      # Matches Prometheus scrape interval so Grafana doesn't request data
+      # at a finer resolution than Prometheus actually has.
+      timeInterval: 15s

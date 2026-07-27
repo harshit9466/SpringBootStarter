@@ -22,10 +22,14 @@ public class ProductServiceImpl implements ProductService {
     private final MeterRegistry     meterRegistry;
 
     /*
-     * Counter: products.created.total
+     * Counter: products.added  →  Prometheus: products_added_total
      * Increments by 1 every time a product is saved successfully.
-     * Use in Prometheus/Grafana: rate(products_created_total[5m])
+     * Use in Prometheus/Grafana: rate(products_added_total[5m])
      * → "How many products are being created per second right now?"
+     *
+     * Why "added" not "created"? OpenMetrics 1.0 reserves the "_created" suffix for
+     * counter creation timestamps. Counter.builder("products.created") → Micrometer
+     * strips "_created" → produces "products_total" (wrong). Use "added" instead.
      *
      * Why pre-build Counters in constructor instead of inline?
      * Counter.builder(...).register(meterRegistry) creates/retrieves from registry.
@@ -60,11 +64,11 @@ public class ProductServiceImpl implements ProductService {
         this.productRepository = productRepository;
         this.meterRegistry     = meterRegistry;
 
-        this.productsCreatedCounter = Counter.builder("products.created.total")
+        this.productsCreatedCounter = Counter.builder("products.added")
                 .description("Total number of products successfully created")
                 .register(meterRegistry);
 
-        this.productsDeletedCounter = Counter.builder("products.deleted.total")
+        this.productsDeletedCounter = Counter.builder("products.deleted")
                 .description("Total number of products successfully deleted")
                 .register(meterRegistry);
 
@@ -75,7 +79,7 @@ public class ProductServiceImpl implements ProductService {
          * 1. Detecting stale product IDs being requested (data consistency issue)
          * 2. Alerting if not-found rate spikes (possible data loss or bad deployment)
          */
-        this.productNotFoundCounter = Counter.builder("products.not_found.total")
+        this.productNotFoundCounter = Counter.builder("products.not_found")
                 .description("Total number of product lookups that returned not found")
                 .register(meterRegistry);
 

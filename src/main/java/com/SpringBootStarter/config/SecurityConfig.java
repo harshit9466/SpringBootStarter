@@ -16,12 +16,13 @@ import org.springframework.security.web.SecurityFilterChain;
 public class SecurityConfig {
 
     // Paths accessible without authentication.
-    // /actuator/** NOT included here — it's on a separate port (9090) via
-    // management.server.port, so Spring Security's filter chain never sees it.
+    // /actuator/** included here — Spring Security filter chain applies to BOTH
+    // main port (8082) and management port (9091). Network firewall protects 9091 in prod.
     private static final String[] OPEN_PATHS = {
             "/v3/api-docs/**",
             "/swagger-ui/**",
-            "/swagger-ui.html"
+            "/swagger-ui.html",
+            "/actuator/**"
     };
 
     private final KeycloakJwtConverter keycloakJwtConverter;

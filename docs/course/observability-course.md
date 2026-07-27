@@ -14,7 +14,7 @@
 | 3 | [Spring Boot Actuator](#module-3--spring-boot-actuator) | ✅ |
 | 4 | [Micrometer](#module-4--micrometer) | ✅ |
 | 5 | [Prometheus](#module-5--prometheus) | ✅ |
-| 6 | [Grafana](#module-6--grafana) | ⏳ |
+| 6 | [Grafana](#module-6--grafana) | ✅ |
 | 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ⏳ |
 | 8 | [Distributed Tracing](#module-8--distributed-tracing) | ⏳ |
 | 9 | [Production Architecture](#module-9--production-architecture) | ⏳ |
@@ -1046,10 +1046,10 @@ Startup pe Spring automatically:
 Startup scenario:
 ```
 t=0s  → Pod starts, JVM starts
-t=1s  → Liveness: CORRECT    (JVM alive, restart mat karo)
-        Readiness: REFUSING_TRAFFIC  (abhi ready nahi, traffic mat bhejo)
+t=1s  → Liveness: UP    (JVM alive, restart mat karo)
+        Readiness: OUT_OF_SERVICE  (abhi ready nahi, traffic mat bhejo)
 t=15s → Spring context load complete, DB connected
-        Readiness: ACCEPTING_TRAFFIC (ab traffic bhejo)
+        Readiness: UP (ab traffic bhejo)
 ```
 
 Agar sirf ek probe hoti aur woh startup mein DOWN return karti:
@@ -1058,11 +1058,16 @@ Agar sirf ek probe hoti aur woh startup mein DOWN return karti:
 **Mid-operation DB failure:**
 ```
 t=600s → DB goes down
-  Readiness: REFUSING_TRAFFIC  (naye requests mat bhejo)
-  Liveness:  CORRECT            (JVM theek hai, restart mat karo)
+  Readiness: OUT_OF_SERVICE  (naye requests mat bhejo)
+  Liveness:  UP               (JVM theek hai, restart mat karo)
   → Kubernetes traffic rok deta, pod alive rehta
-  → DB wapas aaya → Readiness automatically ACCEPTING_TRAFFIC
+  → DB wapas aaya → Readiness automatically UP
 ```
+
+> **Important:** `LivenessState.CORRECT` aur `ReadinessState.ACCEPTING_TRAFFIC` Spring Boot ke
+> **internal enum values** hain. HTTP JSON response mein yeh `"status":"UP"` aur
+> `"status":"OUT_OF_SERVICE"` ban jaate hain. `/actuator/health/liveness` call karo
+> to `{"status":"UP"}` milega — `{"status":"CORRECT"}` nahi.
 
 ---
 
@@ -1078,7 +1083,7 @@ t=600s → DB goes down
       "status": "UP",
       "details": { "database": "PostgreSQL", "validationQuery": "isValid()" }
     },
-    "databaseHealthIndicator": {
+    "database": {
       "status": "UP",
       "details": { "responseTimeMs": 12, "query": "SELECT 1" }
     },
@@ -1086,8 +1091,8 @@ t=600s → DB goes down
       "status": "UP",
       "details": { "total": 499963174912, "free": 205123584000, "threshold": 10485760 }
     },
-    "livenessState":  { "status": "CORRECT" },
-    "readinessState": { "status": "ACCEPTING_TRAFFIC" }
+    "livenessState":  { "status": "UP" },
+    "readinessState": { "status": "UP" }
   }
 }
 ```
@@ -1128,13 +1133,37 @@ management.endpoints.web.exposure.include=*
 # PROD — sirf yeh teen (monitoring tools ko yahi chahiye)
 management.endpoints.web.exposure.include=health,info,metrics,prometheus
 management.endpoint.health.show-details=never
-management.server.port=9090  # Alag port, firewall se internal only
+management.server.port=9091  # Alag port, firewall se internal only
+                             # 9090 avoid karo — Prometheus ka standard port hai
 ```
 
 **`*` production mein kyun dangerous hai:**
 - `/actuator/heapdump` → Full memory dump → tokens, passwords, PII sab leak
 - `/actuator/env` → DB credentials (partially sanitized, not fully)
 - `/actuator/shutdown` → Koi bhi POST kar ke app band kar sakta hai
+
+> **Critical Gotcha — Spring Security DONO ports pe apply hoti hai:**
+>
+> Bahut log assume karte hain ki `management.server.port=9091` set karne se actuator endpoints
+> automatically public ho jaate hain. **Yeh wrong hai.**
+>
+> Spring Security ka filter chain **main port (8082) AND management port (9091) dono pe** apply hota hai.
+> Agar tumhara `SecurityConfig` sirf `/api/**` protect karta hai aur `/actuator/**` skip karta hai,
+> toh actuator accessible rahega. Lekin agar tumhare paas JWT authentication hai aur
+> `/actuator/**` explicitly permit nahi kiya, toh **sab actuator endpoints 401 return karenge**.
+>
+> **Fix — `SecurityConfig.java` mein `/actuator/**` explicitly permit karo:**
+> ```java
+> private static final String[] OPEN_PATHS = {
+>     "/v3/api-docs/**",
+>     "/swagger-ui/**",
+>     "/actuator/**"  // ← yeh line zaroori hai — management port pe bhi Security apply hoti hai
+> };
+> ```
+>
+> **Production mein**: Application-level permit + network firewall = defense in depth.
+> SecurityConfig mein permit karo (taaki Prometheus scrape kar sake), lekin port 9091 ko
+> network firewall se internet-facing mat karo. Dono layers honi chahiye.
 
 ---
 
@@ -1215,15 +1244,35 @@ public class ProductServiceImpl {
 
 ```java
 // Har product creation pe +1
-Counter.builder("products.created.total")
-    .description("Total number of products created")
-    .tag("status", "success")
+Counter.builder("products.added")
+    .description("Total number of products successfully created")
     .register(meterRegistry)
     .increment();
 ```
 
 **Use for**: Request counts, error counts, events. Kabhi ghatta nahi — restart pe reset.
-**Prometheus mein**: `products_created_total{status="success"} 47`
+**Prometheus mein**: `products_added_total{application="spring-boot-starter"} 47`
+
+> **Counter Naming Gotcha — OpenMetrics 1.0 `_created` reserved suffix:**
+>
+> Micrometer automatically `_total` suffix counter metrics mein add karta hai (Prometheus convention).
+> Lekin OpenMetrics 1.0 specification ne `_created` suffix **reserve** kar liya hai counter creation
+> timestamps ke liye.
+>
+> Agar tum counter name mein `_created` end karo, Micrometer is reserved suffix ko strip kar deta hai:
+> ```
+> Counter.builder("products.created")   → Micrometer strips "_created" → "products" → adds "_total"
+>                                       → Prometheus mein: products_total  ← WRONG!
+>
+> Counter.builder("products.created.total")  → dots become underscores: products_created_total
+>                                            → BUT "products_created" ends in "_created"
+>                                            → Micrometer strips "_created" → "products_total" ← WRONG!
+>
+> Counter.builder("products.added")     → products_added → add "_total" → products_added_total ← CORRECT
+> ```
+>
+> **Rule**: Counter name mein `created` word se bachno. Use karo: `added`, `registered`,
+> `processed`, `submitted` — koi bhi synonym jo `_created` se end nahi karta.
 
 #### Gauge — Current snapshot
 
@@ -1330,7 +1379,7 @@ Yeh sab `/actuator/metrics` pe available hain turat — sirf Actuator + Micromet
 2. **Counter** — product not found errors
 3. **Timer** — har operation ki duration (automatic p50, p95, p99)
 
-`GET /actuator/metrics/products.created.total` se verify karo.
+`GET /actuator/metrics/products.added` se verify karo.
 `GET /actuator/metrics/product.operation.duration` se percentiles dekho.
 
 ---
@@ -1464,7 +1513,7 @@ data/
 
 ```
 # 1. Counter — sirf badhta hai, restart pe reset
-products_created_total{application="spring-boot-starter"} 1547
+products_added_total{application="spring-boot-starter"} 1547
 
 # 2. Gauge — current value, up/down jaata hai
 jvm_memory_used_bytes{area="heap"} 104857600
@@ -1491,10 +1540,10 @@ product_operation_duration_seconds{quantile="0.95"} 0.234
 
 ```promql
 # rate() — average per-second rate over 5 minutes (smooth, good for alerts)
-rate(products_created_total[5m])
+rate(products_added_total[5m])
 
 # irate() — rate between last 2 data points only (spiky, good for debugging)
-irate(products_created_total[5m])
+irate(products_added_total[5m])
 ```
 
 **Rule of thumb:**
@@ -1542,9 +1591,9 @@ histogram_quantile(
 
 | Function | Use Case | Example |
 |---|---|---|
-| `rate(counter[5m])` | Per-second rate (smooth) | `rate(products_created_total[5m])` |
+| `rate(counter[5m])` | Per-second rate (smooth) | `rate(products_added_total[5m])` |
 | `irate(counter[5m])` | Instantaneous rate | `irate(http_requests_total[5m])` |
-| `increase(counter[1h])` | Total increase in window | `increase(products_created_total[1h])` |
+| `increase(counter[1h])` | Total increase in window | `increase(products_added_total[1h])` |
 | `histogram_quantile(φ, buckets)` | P50/P95/P99 from histogram | `histogram_quantile(0.99, rate(...bucket[5m]))` |
 | `sum by (label)` | Group and aggregate | `sum by (status) (rate(...))` |
 | `topk(N, metric)` | Top N series by value | `topk(5, rate(http_requests[5m]))` |
@@ -1608,7 +1657,7 @@ histogram_quantile(0.95,
 )
 
 # 5. Our custom product counter
-products_created_total{application="spring-boot-starter"}
+products_added_total{application="spring-boot-starter"}
 
 # 6. Active HTTP connections
 tomcat_connections_active_current_connections
@@ -1637,7 +1686,267 @@ Add Prometheus data source:
 
 ## Module 6 — Grafana
 
-> _Content to be added_
+### 6.1 Why Grafana Exists — Prometheus Ka Limitation
+
+Prometheus UI (`http://localhost:9090`) mein ek basic graph explorer hai. Lekin production mein yeh kaafi nahi hai:
+
+- Ek hi time mein multiple queries ek screen pe nahi dekh sakte
+- Dashboards save nahi ho sakte (session ke baad lost)
+- Team ke saath share karna possible nahi
+- Alerting system nahi hai
+- Multiple data sources (Prometheus + Loki + Jaeger) ek jagah nahi
+
+**Grafana** yeh gap fill karta hai — ek **visualization and alerting platform** jo multiple data sources ko ek jagah lata hai.
+
+```
+Prometheus (metrics) ──┐
+Loki (logs)            ├──► Grafana ──► Dashboards + Alerts + Teams
+Jaeger (traces)        ┘
+```
+
+> 💡 **Real-world analogy**: Prometheus ek raw database hai. Grafana ek BI tool hai jaise Power BI ya Tableau — data wahi rehta hai, sirf visualization layer alag hoti hai.
+
+**Important**: Grafana data store nahi karta. Woh sirf Prometheus ko PromQL queries bhejta hai aur result visualize karta hai. Sab data Prometheus TSDB mein rehta hai.
+
+---
+
+### 6.2 Grafana Architecture — Andar Kya Hota Hai
+
+```
+Browser
+   │
+   ▼
+Grafana Server (port 3000)
+   │
+   ├── Dashboard Engine       ← JSON model parse karta hai
+   ├── Query Engine           ← Data source plugins ke through queries
+   ├── Alerting Engine        ← PromQL evaluate karta hai, alerts fire karta hai
+   └── Provisioning System    ← File-based config (datasources, dashboards)
+         │
+         ▼
+   Data Source Plugin (Prometheus)
+         │
+         ▼
+   Prometheus HTTP API (/api/v1/query_range)
+         │
+         ▼
+   TSDB → time series data wapas Grafana ko
+```
+
+**Key concept — Dashboard JSON Model:**
+
+Grafana ke andar har dashboard ek **JSON object** hai. Jab tum UI mein drag-drop karke panel banate ho, Grafana woh JSON generate karta hai aur database mein save karta hai.
+
+Yeh JSON extract karke file mein save karo → version control mein daalo → **dashboards as code**.
+
+---
+
+### 6.3 RED Method — Production Dashboard Design Ka Sahi Tarika
+
+**RED Method** ko **Tom Wilkie** (Grafana Labs) ne define kiya — specifically microservices ke liye.
+
+```
+R — Rate     : Requests per second (kitna load aa raha hai?)
+E — Errors   : Error rate % (kitne fail ho rahe hain?)
+D — Duration : Latency percentiles (kitna time lag raha hai?)
+```
+
+**Har service ke liye yeh teeno panels hone chahiye.** Yahi production mein on-call engineer sabse pehle dekhta hai.
+
+#### BiharOne Certificate Service ke liye RED Dashboard:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Certificate Service — Production Dashboard                  │
+├─────────────┬──────────────────┬───────────────────────────┤
+│ RATE        │ ERROR RATE       │ DURATION (P95)            │
+│             │                  │                           │
+│ 47 req/s    │ 0.3%             │ 234ms                     │
+│ ▲ graph     │ ▲ graph          │ ▲ graph                   │
+│             │  ← RED line at 1%│  ← RED line at 500ms      │
+├─────────────┴──────────────────┴───────────────────────────┤
+│ JVM Heap Usage     │ DB Connection Pool  │ Custom: Certs   │
+│ 512MB / 1024MB     │ 8 / 10 active       │ Issued: 1,247   │
+│ 50%                │ 80% — WARN          │ Failed: 3       │
+└────────────────────┴─────────────────────┴─────────────────┘
+```
+
+**PromQL jo in panels ke peeche hain:**
+
+```promql
+# Rate — requests per second (last 5 min)
+sum(rate(http_server_requests_seconds_count{application="spring-boot-starter"}[5m]))
+
+# Error Rate — % of 5xx responses
+100 * sum(rate(http_server_requests_seconds_count{application="spring-boot-starter", status=~"5.."}[5m]))
+    / sum(rate(http_server_requests_seconds_count{application="spring-boot-starter"}[5m]))
+
+# P95 Duration — 95th percentile latency
+histogram_quantile(0.95,
+  sum by (le) (
+    rate(http_server_requests_seconds_bucket{application="spring-boot-starter"}[5m])
+  )
+)
+```
+
+---
+
+### 6.4 USE Method — Infrastructure Panels Ke Liye
+
+RED method services ke liye hai. **USE Method** ko **Brendan Gregg** (Netflix) ne define kiya — infrastructure resources ke liye.
+
+```
+U — Utilization : Resource kitna use ho raha hai (0–100%)
+S — Saturation  : Kitna kaam queue mein wait kar raha hai
+E — Errors      : Resource-level errors
+```
+
+**Spring Boot ke context mein USE:**
+
+| Resource | Utilization | Saturation | Errors |
+|----------|-------------|------------|--------|
+| JVM Heap | `jvm_memory_used / jvm_memory_max` | GC pause frequency | GC overhead errors |
+| DB Connection Pool | `hikari_active / hikari_max` | `hikari_pending` (waiting threads) | Connection timeout errors |
+| Thread Pool | `tomcat_threads_busy / tomcat_threads_max` | Request queue depth | Thread rejection errors |
+
+**Critical rule**: Jab DB connection pool **saturation** dikhaye (pending > 0), request ka response time instantly degrade hota hai — thread ek free connection ke liye wait kar raha hota hai. Yeh ek lagging indicator hai — detect karne ke time tak users already impact ho chuke hote hain. **Proactive alert lagao jab utilization 70% cross kare**, 100% pe nahi.
+
+---
+
+### 6.5 Dashboard Provisioning — Dashboards as Code
+
+**Yeh section sabse important production concept hai.**
+
+#### Problem with clicking:
+
+Agar tum Grafana UI mein manually dashboard banate ho:
+- Grafana ka SQLite/PostgreSQL database mein save hota hai
+- Docker container restart → **data lost** (agar volume mount nahi hai)
+- Team ka koi aur member same dashboard nahi bana sakta
+- Version history nahi, rollback nahi
+- Staging aur production mein alag dashboards → inconsistency
+
+#### Solution: Provisioning
+
+Grafana ek **provisioning system** support karta hai — YAML files se datasources aur dashboards automatically load ho jaate hain at startup.
+
+```
+docker/grafana/
+├── provisioning/
+│   ├── datasources/
+│   │   └── prometheus.yml     ← Prometheus connection auto-configure
+│   └── dashboards/
+│       └── dashboards.yml     ← Dashboard folder config
+└── dashboards/
+    └── spring-boot-RED.json   ← Actual dashboard (version controlled)
+```
+
+**Grafana startup pe yeh sequence hoti hai:**
+1. `provisioning/datasources/` scan karo → Prometheus datasource automatically add
+2. `provisioning/dashboards/` scan karo → dashboard folder location pata chale
+3. Dashboard folder se JSON files load karo → dashboards UI mein appear
+
+Zero clicks. Zero manual config. Container restart karo → sab wapas waise ka waisa.
+
+---
+
+### 6.6 Alerting — Sahi Alert Design
+
+**Alert fatigue** ek real production problem hai: itne alerts aate hain ki on-call engineer unhe ignore karna shuru kar deta hai. Ek alert jo "false positive" baar baar fire ho — woh ek din real outage mein bhi ignore ho jaata hai.
+
+#### Grafana Alerting Architecture (Unified Alerting — Grafana 9+):
+
+```
+Alert Rule (PromQL condition)
+       │
+       ▼ evaluate every 1m
+Alerting Engine
+       │
+  condition true?
+       │
+       ▼
+Alert State Machine:
+  Normal → Pending (for 5m) → Firing
+                              │
+                              ▼
+                        Contact Point
+                   (Email / Slack / PagerDuty)
+                              │
+                              ▼
+                    Notification Policy
+                  (who gets alerted, when)
+```
+
+**"Pending" period kyun?** Agar ek spike aata hai 30 seconds ke liye aur condition true hoti hai — bina pending ke immediately alert fire hoga (false positive). Pending period (e.g. 5 minutes) ensure karta hai ki condition **sustained** hai, transient nahi.
+
+#### Alert Tiers — BiharOne Standard:
+
+```
+Tier 1 — CRITICAL (page on-call immediately):
+  • Error rate > 5% for 5 minutes
+  • Service completely down (up == 0)
+  • P99 latency > 10 seconds for 5 minutes
+
+Tier 2 — WARNING (Slack notification, no page):
+  • Error rate > 1% for 5 minutes
+  • P95 latency > 2 seconds for 5 minutes
+  • DB connection pool utilization > 70%
+  • JVM heap > 80% for 10 minutes
+
+Tier 3 — INFO (dashboard only, no notification):
+  • Unusual traffic spike (> 2x baseline)
+  • GC pause frequency increasing
+```
+
+**Rule of thumb**: Agar alert fire hone ke baad human ko koi action nahi lena, woh alert nahi hona chahiye. Informational metrics ko dashboards pe rakho — alerts mein nahi.
+
+---
+
+### 6.7 Practical Setup — Provisioning Files
+
+> See files created in: `docker/grafana/`
+
+#### What we implement:
+1. `docker-compose.yml` update — Grafana ko provisioning volumes mount karein
+2. `docker/grafana/provisioning/datasources/prometheus.yml` — Prometheus auto-connect
+3. `docker/grafana/provisioning/dashboards/dashboards.yml` — Dashboard folder config
+4. `docker/grafana/dashboards/spring-boot-RED.json` — Production RED dashboard
+
+#### Steps to verify:
+
+```bash
+# Step 1: Start fresh (provisioning pick up ke liye)
+docker-compose down && docker-compose up -d
+
+# Step 2: Grafana open karo
+# http://localhost:3000  (admin/admin)
+# → Left sidebar: Dashboards → Browse
+# → "Spring Boot — RED Dashboard" automatically appear karega
+
+# Step 3: Prometheus datasource verify
+# → Left sidebar: Connections → Data Sources
+# → "Prometheus" already configured dikhega (koi manual step nahi)
+
+# Step 4: Apna app generate karo kuch traffic
+curl http://localhost:8082/api/products
+curl http://localhost:8082/api/products/999   # 404 — error metric
+
+# Step 5: Dashboard pe dekho
+# Rate, Error Rate, Duration panels live data dikhayenge
+```
+
+---
+
+### 6.8 Key Takeaways
+
+1. **Grafana data store nahi karta** — sirf Prometheus ko query karta hai aur visualize karta hai.
+2. **RED method** (Rate + Errors + Duration) = har service ka baseline dashboard. Koi bhi on-call engineer bina context ke samajh sakta hai.
+3. **USE method** (Utilization + Saturation + Errors) = infrastructure panels ke liye. DB pool saturation pe alert lagao — 100% pe nahi, 70% pe.
+4. **Provisioning = dashboards as code**. Click karke banana = technical debt. YAML + JSON files = version controlled, reproducible, team-shareable.
+5. **Alert fatigue real hai**. Tier system follow karo: CRITICAL (page), WARNING (Slack), INFO (dashboard only). Agar alert ke baad koi action nahi — woh alert nahi hona chahiye.
+6. **Pending period** (5 min) transient spikes se false alerts rokta hai.
+
+---
 
 ---
 

@@ -43,9 +43,9 @@ jvm_memory_used_bytes{application="spring-boot-starter",area="heap",...} 5.6e+07
 http_server_requests_seconds_bucket{application="spring-boot-starter",le="0.001",...} 0.0
 ...
 
-# HELP products_created_total Total number of products created
-# TYPE products_created_total counter
-products_created_total{application="spring-boot-starter"} 0.0
+# HELP products_added_total Total number of products successfully created
+# TYPE products_added_total counter
+products_added_total{application="spring-boot-starter"} 0.0
 ```
 
 ---
@@ -153,10 +153,10 @@ histogram_quantile(0.95,
 
 ```promql
 # Product creation counter
-products_created_total{application="spring-boot-starter"}
+products_added_total{application="spring-boot-starter"}
 
 # Product creation rate per second
-rate(products_created_total{application="spring-boot-starter"}[5m])
+rate(products_added_total{application="spring-boot-starter"}[5m])
 
 # 404 errors (product not found)
 products_not_found_total{application="spring-boot-starter"}

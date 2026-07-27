@@ -59,7 +59,9 @@ scrape_configs:
       # WHY NOT localhost: Prometheus container ke andar 'localhost' = container
       #                    itself, not host machine. Spring Boot host pe chal
       #                    raha hai — isliye host.docker.internal use karo.
-      - targets: ['host.docker.internal:8082']
+      # management.server.port=9091 in application-dev.properties moves ALL
+      # actuator endpoints (including /actuator/prometheus) to port 9091.
+      - targets: ['host.docker.internal:9091']
         labels:
           service: 'spring-boot-starter'
           team: 'backend'

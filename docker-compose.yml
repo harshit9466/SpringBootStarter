@@ -15,8 +15,6 @@
 #   Logs:   docker-compose logs -f prometheus
 # =============================================================================
 
-version: '3.8'
-
 services:
 
   # ---------------------------------------------------------------------------
@@ -95,8 +93,12 @@ services:
       # Named volume for Grafana data (dashboards, users, settings)
       - grafana_data:/var/lib/grafana
 
-      # Module 6 mein yeh provisioning folders add karenge:
-      # - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Provisioning: datasources + dashboards automatically load at startup.
+      # :ro = Grafana can read but not modify our source files.
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+
+      # Dashboard JSON files (version controlled — dashboards as code)
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
     depends_on:
       - prometheus

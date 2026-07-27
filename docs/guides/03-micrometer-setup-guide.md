@@ -175,11 +175,11 @@ public class ProductServiceImpl implements ProductService {
         this.meterRegistry = meterRegistry;
 
         // Initialize Counters
-        this.productsCreatedCounter = Counter.builder("products.created.total")
+        this.productsCreatedCounter = Counter.builder("products.added")
                 .description("Total number of products successfully created")
                 .register(meterRegistry);
 
-        this.productsDeletedCounter = Counter.builder("products.deleted.total")
+        this.productsDeletedCounter = Counter.builder("products.deleted")
                 .description("Total number of products successfully deleted")
                 .register(meterRegistry);
 
@@ -190,7 +190,7 @@ public class ProductServiceImpl implements ProductService {
          * This custom counter increments ONLY when a valid business API lookup fails to find a domain entity,
          * indicating potential data consistency bugs or stale client caches.
          */
-        this.productNotFoundCounter = Counter.builder("products.not_found.total")
+        this.productNotFoundCounter = Counter.builder("products.not_found")
                 .description("Total number of product lookups that failed to find an entity")
                 .register(meterRegistry);
 
@@ -283,9 +283,9 @@ Counter.builder("api.requests")
 When Prometheus server hits `GET /actuator/prometheus`, Micrometer outputs text like this:
 
 ```prometheus
-# HELP products_created_total Total number of products successfully created
-# TYPE products_created_total counter
-products_created_total{application="spring-boot-starter"} 45.0
+# HELP products_added_total Total number of products successfully created
+# TYPE products_added_total counter
+products_added_total{application="spring-boot-starter"} 45.0
 
 # HELP product_operation_duration_seconds Duration of database product lookup operations
 # TYPE product_operation_duration_seconds summary
@@ -300,7 +300,7 @@ product_operation_duration_seconds_sum{application="spring-boot-starter",operati
 
 #### 1. Product Creation Rate (Products per second over a 5-minute rolling window):
 ```promql
-rate(products_created_total{application="spring-boot-starter"}[5m])
+rate(products_added_total{application="spring-boot-starter"}[5m])
 ```
 
 #### 2. Business Error Ratio (Percentage of lookups failing with Not Found):
@@ -326,13 +326,13 @@ Execute these verifications against your running application:
   curl -i http://localhost:8082/actuator/prometheus
 
 □ Check if custom counters exist in output (should appear with 0.0 initial value or post-traffic count):
-  curl -s http://localhost:8082/actuator/prometheus | grep "products_created_total"
+  curl -s http://localhost:8082/actuator/prometheus | grep "products_added_total"
 
 □ Trigger API traffic to generate metric counts:
   curl -X POST http://localhost:8082/api/products -H "Content-Type: application/json" -d '{"name":"Test","price":99.9}'
 
 □ Re-verify that counter incremented in Prometheus output:
-  curl -s http://localhost:8082/actuator/prometheus | grep "products_created_total"
+  curl -s http://localhost:8082/actuator/prometheus | grep "products_added_total"
 
 □ Check if percentiles (quantile="0.95") are generated for operation timers:
   curl -s http://localhost:8082/actuator/prometheus | grep "product_operation_duration_seconds"
@@ -359,7 +359,7 @@ Execute these verifications against your running application:
 * **Controller layer**: Rely on Spring Boot's automatic `http.server.requests` instrumentation; avoid writing manual timers in controllers unless measuring specific serialization overhead.
 
 ### Hexagonal / Ports & Adapters Architecture
-* **Application Services (Use Cases)**: This is the **primary location** for business metrics (`products.created.total`, use case execution timers). The Application Service orchestrates domain logic and represents the true business boundary.
+* **Application Services (Use Cases)**: This is the **primary location** for business metrics (`products.added`, use case execution timers). The Application Service orchestrates domain logic and represents the true business boundary.
 * **Outbound Adapters (Persistence / REST Clients)**: Add architectural Timers here to measure external latency (e.g., `adapter.payment.gateway.duration` or `adapter.db.query.duration`).
 * **Domain Model (Pure Java Records/Entities)**: **ZERO METRICS HERE**. The domain layer must remain pure Java with no dependencies on Micrometer, Spring, or infrastructure libraries.
 
