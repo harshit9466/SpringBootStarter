@@ -14,19 +14,58 @@
     <springProfile name="dev">
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder>
+                <!--
+                    traceId/spanId: populated automatically by Micrometer Tracing (Module 8) —
+                    no filter code sets these. Using :- (default-empty) instead of a bare %X{}
+                    avoids the literal string "null" appearing on startup logs or background
+                    threads where no HTTP request — and therefore no span — is active.
+                -->
                 <pattern>
-                    %d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%cyan(${APP_NAME})] [traceId=%X{traceId}] [%thread] %logger{40} - %msg%n%ex
+                    %d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%cyan(${APP_NAME})] [traceId=%X{traceId:-}] [spanId=%X{spanId:-}] [%thread] %logger{40} - %msg%n%ex
                 </pattern>
             </encoder>
         </appender>
 
+        <!--
+            Module 7 (Logging Infrastructure) — pushes the SAME log stream to Loki over HTTP,
+            in addition to the console. Direct push (not Promtail/file-tailing) because this
+            app runs on the host, not in a container Promtail could read stdout from.
+
+            labels: kept to ONLY "app" — labels are Loki's indexed fields, same high-cardinality
+            rule as Prometheus tags from Module 4. traceId/spanId/requestId are unique per
+            request — putting them here would blow up Loki's index exactly like a unique
+            Prometheus tag value would.
+
+            structuredMetadata: this is where traceId/spanId/requestId belong instead — still
+            queryable/filterable per log line, without being part of the index.
+        -->
+        <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+            <http>
+                <url>http://localhost:3100/loki/api/v1/push</url>
+            </http>
+            <labels>
+                app = ${APP_NAME}
+            </labels>
+            <structuredMetadata>
+                level = %level
+                traceId = %X{traceId:-}
+                spanId = %X{spanId:-}
+                requestId = %X{requestId:-}
+            </structuredMetadata>
+            <message>
+                <pattern>[%thread] %logger{40} - %msg%n%ex</pattern>
+            </message>
+        </appender>
+
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="LOKI"/>
         </root>
 
         <!-- Enable DEBUG for our own code only — not Spring internals -->
         <logger name="com.SpringBootStarter" level="DEBUG" additivity="false">
             <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="LOKI"/>
         </logger>
     </springProfile>
 
@@ -63,6 +102,7 @@
 
                 <!-- Include MDC fields (traceId, citizenId, etc.) as top-level JSON fields -->
                 <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
                 <includeMdcKeyName>citizenId</includeMdcKeyName>
                 <includeMdcKeyName>district</includeMdcKeyName>
                 <includeMdcKeyName>requestId</includeMdcKeyName>

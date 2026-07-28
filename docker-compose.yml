@@ -4,6 +4,8 @@
 # Yeh compose file spin up karta hai:
 #   1. Prometheus  (port 9090) — Metrics collection & PromQL
 #   2. Grafana     (port 3000) — Dashboards & Alerting (Module 6 mein use)
+#   3. Tempo       (port 3200, OTLP 4317/4318) — Distributed tracing (Module 8 mein use)
+#   4. Loki        (port 3100) — Log aggregation (Module 7 mein use)
 #
 # Spring Boot app is compose mein NAHI hai — host pe seedha chalta rahega.
 # WHY: Development mein Spring Boot restart karana fast hota hai bina Docker ke.
@@ -106,6 +108,58 @@ services:
     networks:
       - observability
 
+  # ---------------------------------------------------------------------------
+  # LOKI — Log Aggregation (Module 7)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.6.0
+    container_name: loki
+    restart: unless-stopped
+
+    command:
+      - '-config.file=/etc/loki/loki-config.yaml'
+
+    ports:
+      # 3100: Loki's push/query API. Spring Boot app (running on host, see note
+      # at top of this file) sends logs here via loki-logback-appender, and
+      # Grafana's Loki datasource queries here too.
+      - "3100:3100"
+
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+
+    networks:
+      - observability
+
+  # ---------------------------------------------------------------------------
+  # TEMPO — Distributed Tracing Backend (Module 8)
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: tempo
+    restart: unless-stopped
+
+    command:
+      - '-config.file=/etc/tempo.yaml'
+
+    ports:
+      # 3200: Tempo's own query API — Grafana's Tempo datasource connects here.
+      - "3200:3200"
+      # 4317/4318: OTLP receivers — gRPC and HTTP respectively.
+      # Spring Boot app (running on host, see note at top of this file) sends
+      # spans to 4318 (HTTP) per management.otlp.tracing.endpoint in
+      # application-dev.properties.
+      - "4317:4317"
+      - "4318:4318"
+
+    volumes:
+      - ./docker/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+
+    networks:
+      - observability
+
 # =============================================================================
 # NETWORKS
 # =============================================================================
@@ -123,4 +177,8 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  tempo_data:
+    driver: local
+  loki_data:
     driver: local

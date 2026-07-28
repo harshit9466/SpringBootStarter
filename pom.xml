@@ -52,6 +52,31 @@
 			<artifactId>micrometer-registry-prometheus</artifactId>
 		</dependency>
 
+		<!--
+			micrometer-tracing-bridge-otel
+			Micrometer Tracing is Spring Boot 3's tracing facade (same role as Micrometer
+			for metrics — decouples instrumentation code from the tracing backend).
+			This bridge wires Micrometer Tracing's API to the OpenTelemetry implementation.
+			Auto-instruments: every HTTP request/response, and propagates trace context
+			(W3C traceparent header) to outbound RestTemplate/WebClient calls automatically.
+			Without this: no spans are created, no traceId exists anywhere.
+		-->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-otel</artifactId>
+		</dependency>
+
+		<!--
+			opentelemetry-exporter-otlp
+			Exports finished spans to a tracing backend (Grafana Tempo here) using the
+			OTLP protocol — the vendor-neutral standard most modern tracing backends accept.
+			Without this: spans are created in-memory but never sent anywhere; Tempo stays empty.
+		-->
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-exporter-otlp</artifactId>
+		</dependency>
+
 		<!-- Spring Boot Starter for Web -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -80,6 +105,23 @@
 			<groupId>net.logstash.logback</groupId>
 			<artifactId>logstash-logback-encoder</artifactId>
 			<version>8.0</version>
+		</dependency>
+
+		<!--
+			loki-logback-appender (Module 7 — Logging Infrastructure)
+			Pushes logs directly from this JVM to Grafana Loki over HTTP — no Promtail or
+			file-tailing needed. Chosen specifically because this app runs on the HOST (not
+			in Docker, see docker-compose.yml), so there's no container stdout for a
+			cluster-level log collector to tail in this dev setup, same reasoning as using
+			OTLP-over-HTTP directly for tracing instead of a sidecar collector.
+			Third-party library, NOT covered by Spring Boot's dependency management —
+			version verified against Maven Central (search.maven.org), not guessed.
+			WHAT HAPPENS IF REMOVED: logs stay in console/file only, never reach Loki.
+		-->
+		<dependency>
+			<groupId>com.github.loki4j</groupId>
+			<artifactId>loki-logback-appender</artifactId>
+			<version>2.0.0</version>
 		</dependency>
 
 		<!-- Add the Hibernate Validator dependency -->

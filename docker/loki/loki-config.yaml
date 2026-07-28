@@ -1,0 +1,42 @@
+# =============================================================================
+# GRAFANA LOKI — Single-Node Local Dev Configuration
+# =============================================================================
+# Verified against Loki's own maintained example: cmd/loki/loki-docker-config.yaml
+# in the grafana/loki repository — not hand-guessed, since schema_config's store/
+# schema version fields have changed across Loki releases and getting this wrong
+# means Loki fails to start entirely.
+# =============================================================================
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Explicit rather than relying on whatever the default is for schema v13 —
+  # our loki-logback-appender config (logback-spring.xml) sends traceId/spanId/
+  # requestId as structured metadata, not labels (see that file's comment on
+  # why — same cardinality reasoning as Prometheus tags from Module 4/5).
+  allow_structured_metadata: true

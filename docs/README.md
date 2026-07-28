@@ -13,6 +13,8 @@
 docs/
 ├── README.md                          ← Start here
 ├── context_for_the_goal.md            ← Course philosophy (for AI teaching this course)
+├── observability-library-plan.md      ← DEFERRED — shared starter library design doc, revisit after all modules done
+├── object-storage-for-observability.md ← MinIO vs ODF deep-dive for reliable on-prem log/trace storage
 ├── course/
 │   └── observability-course.md        ← Full 10-module theory course (for humans)
 └── guides/                            ← Implementation guides (for AI + humans)
@@ -20,7 +22,9 @@ docs/
     ├── 02-actuator-setup-guide.md
     ├── 03-micrometer-setup-guide.md
     ├── 04-prometheus-setup-guide.md
-    └── 05-security-setup-guide.md
+    ├── 05-security-setup-guide.md
+    ├── 06-grafana-setup-guide.md
+    └── 07-tracing-setup-guide.md
 ```
 
 ---
@@ -36,6 +40,8 @@ Read and follow these guides **in this exact order**. Each guide is self-contain
 | 3 | `guides/03-micrometer-setup-guide.md` | Counters, Timers, Gauges, percentile config, high-cardinality rules |
 | 4 | `guides/04-prometheus-setup-guide.md` | Docker Compose setup (Prometheus + Grafana), PromQL queries |
 | 5 | `guides/05-security-setup-guide.md` | OAuth2 Resource Server (Keycloak JWT), `CurrentPrincipal`, `KeycloakJwtConverter` |
+| 6 | `guides/06-grafana-setup-guide.md` | Provisioned datasource + RED-method dashboard, Grafana 11 gotchas |
+| 7 | `guides/07-tracing-setup-guide.md` | Micrometer Tracing + OTLP → Grafana Tempo, MDC collision fix |
 
 **Each guide includes:**
 - Maven + Gradle dependency blocks
@@ -63,11 +69,21 @@ Read and follow these guides **in this exact order**. Each guide is self-contain
 04-prometheus → Prometheus scrapes /actuator/prometheus (needs steps 2 + 3)
      ↓
 05-security   → Secures /actuator/* endpoints (applied last)
+     ↓
+06-grafana    → Dashboards visualize what Prometheus already collected
+     ↓
+07-tracing    → Adds Tempo alongside Prometheus/Grafana; fixes the MDC traceId
+                collision against step 1's MdcRequestFilter
 ```
 
 Do **NOT** apply the security guide (step 5) before verifying steps 1–4 work without auth.
 Debugging through auth headers while setting up the observability pipeline for the first time adds
 unnecessary complexity — verify the full pipeline is working first, then lock it down.
+
+Step 7 (tracing) must come after step 1 (logging) is actually in place, not just after step 6 —
+it specifically modifies the `MdcRequestFilter` step 1 created. Applying tracing to a project
+that skipped step 1 means there's no existing MDC filter to fix, so that part of the guide
+doesn't apply.
 
 ---
 
@@ -101,11 +117,16 @@ curl http://localhost:8082/actuator/health/readiness
 # 4. Prometheus metrics endpoint
 curl -s http://localhost:8082/actuator/prometheus | head -30
 
-# 5. Prometheus UI (after docker-compose up from guide 04)
+# 5. Prometheus UI (after docker-compose up -d, from guide 04)
 # http://localhost:9090/targets  → spring-boot-starter should show UP
 
-# 6. Grafana (after docker-compose up from guide 04)
-# http://localhost:3000  → admin/admin → Add Prometheus datasource → URL: http://prometheus:9090
+# 6. Grafana (same docker-compose up -d — datasource + dashboard are auto-provisioned
+#    by guide 06's provisioning files, no manual "Add datasource" click needed)
+# http://localhost:3000  → admin/admin → Dashboards → "Spring Boot — RED Dashboard"
+
+# 7. Tracing (guide 07 — after adding the Tempo service and restarting the app)
+curl http://localhost:8082/api/products
+# then: http://localhost:3000 → Explore → Tempo → Search → spring-boot-starter
 ```
 
 ---
@@ -122,9 +143,9 @@ curl -s http://localhost:8082/actuator/prometheus | head -30
 | 3 | Spring Boot Actuator — Internal architecture, Probes, Custom HealthIndicators | ✅ |
 | 4 | Micrometer — MeterRegistry, Counters, Timers, Percentiles | ✅ |
 | 5 | Prometheus — Pull model, TSDB, PromQL, High cardinality | ✅ |
-| 6 | Grafana — Dashboards, RED method, Alerting | ⏳ |
+| 6 | Grafana — Dashboards, RED method, Alerting | ✅ |
 | 7 | Logging Infrastructure — Loki, Fluent Bit, Elasticsearch | ⏳ |
-| 8 | Distributed Tracing — OpenTelemetry, Jaeger, Zipkin | ⏳ |
+| 8 | Distributed Tracing — Micrometer Tracing, OTLP, Grafana Tempo | ✅ |
 | 9 | Production Architecture — End-to-end observability stack | ⏳ |
 | 10 | Production Readiness — PII masking, retention, compliance | ⏳ |
 

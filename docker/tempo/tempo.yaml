@@ -1,0 +1,36 @@
+# =============================================================================
+# GRAFANA TEMPO — Minimal Local Dev Configuration
+# =============================================================================
+# Tempo receives spans over OTLP, stores them, and lets Grafana query them
+# by traceId. This config intentionally does NOT enable the metrics-generator
+# (which would compute service-graph/span-metrics and push them to Prometheus)
+# — that requires a remote_write target and overrides config, and is only
+# worth adding once there's a real reason to use Grafana's Service Graph tab.
+# Adding it now with nothing consuming it would silently do nothing, same
+# class of mistake as the earlier Grafana "datasource variable" trap.
+# =============================================================================
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+        grpc:
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h   # how long traces are kept — dev only, prod needs more
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

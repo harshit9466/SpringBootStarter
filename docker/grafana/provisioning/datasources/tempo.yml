@@ -1,0 +1,39 @@
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    # "tempo" = container name on the observability Docker network, same
+    # reasoning as the Prometheus datasource — Grafana resolves it via Docker DNS.
+    url: http://tempo:3200
+    access: proxy
+    editable: false
+    jsonData:
+      # Module 7 (Loki) now exists — closing the loop that was deliberately left
+      # open in Module 8. Verified against Grafana's own provisioning docs
+      # (grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/provision/),
+      # not guessed, given two unrelated API mismatches already hit this session.
+      #
+      # tags: maps the span's OTel resource attribute "service.name" to our
+      # Loki label "app" (see logback-spring.xml's Loki4jAppender <labels>) —
+      # narrows "jump to logs" to the right service and time window.
+      #
+      # filterByTraceID intentionally left false: our structured metadata field
+      # is camelCase "traceId" (matching Micrometer Tracing's MDC key), and
+      # Grafana's filterByTraceID may expect a different exact field name —
+      # unverified, so left off rather than risk a silent partial mismatch.
+      # Tag+time-window filtering alone is still a real improvement over
+      # manually copy-pasting a traceId between Tempo and Loki.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        filterByTraceID: false
+        filterBySpanID: false
+        tags:
+          - key: 'service.name'
+            value: 'app'
+    # NOTE: no jsonData.serviceMap here — that needs Tempo's metrics-generator
+    # pushing span metrics into Prometheus, deliberately not enabled (see
+    # docker/tempo/tempo.yaml and guide 07 §12 for the exact setup when needed).

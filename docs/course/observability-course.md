@@ -16,7 +16,7 @@
 | 5 | [Prometheus](#module-5--prometheus) | ✅ |
 | 6 | [Grafana](#module-6--grafana) | ✅ |
 | 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ⏳ |
-| 8 | [Distributed Tracing](#module-8--distributed-tracing) | ⏳ |
+| 8 | [Distributed Tracing](#module-8--distributed-tracing) | ✅ |
 | 9 | [Production Architecture](#module-9--production-architecture) | ⏳ |
 | 10 | [Production Readiness](#module-10--production-readiness) | ⏳ |
 
@@ -1958,7 +1958,248 @@ curl http://localhost:8082/api/products/999   # 404 — error metric
 
 ## Module 8 — Distributed Tracing
 
-> _Content to be added_
+> See implementation: `docs/guides/07-tracing-setup-guide.md`, `docker/tempo/tempo.yaml`,
+> `src/main/java/com/SpringBootStarter/filter/MdcRequestFilter.java`
+
+### 8.1 Revisiting the Question Module 1 Left Open
+
+Module 1 §1.7 introduced this scenario aur jaan-bujhkar unsolved chhoda tha:
+
+```
+Citizen Request
+    → API Gateway (5ms)
+        → Auth Service (45ms)
+            → Certificate Service (2400ms) ← WHERE is the 2400ms going?
+                → Document Verification Service (200ms)
+                → Database Query 1 (50ms)
+                → Database Query 2 (2100ms) ← AH. Slow DB query.
+                → PDF Generator (50ms)
+```
+
+Logs ne bataya **kya** hua ("Certificate processed in 2400ms"). Metrics ne bataya **kitni baar**
+aur **kitna** (p95 latency, error rate). Lekin dono mein se koi bhi yeh nahi bata sakta ki
+**ek specific slow request ke andar** time kahan gaya — especially jab request 4 alag services
+se hokar guzra ho. Yeh gap sirf **Tracing** fill karta hai — observability ka teesra pillar.
+
+### 8.2 Core Vocabulary
+
+| Term | Matlab |
+|---|---|
+| **Trace** | Ek request ka poora safar — jitni bhi services usne touch ki. Ek `traceId` se identify hota hai, jo pura safar shared rehta hai. |
+| **Span** | Trace ke andar ek unit of work — jaise "yeh HTTP request handle karo," "yeh DB query chalao." Apna `spanId` hota hai, start time, duration, aur ek parent span (pehle span ko chhod ke). |
+| **Trace Context** | `traceId` + current `spanId` + sampling decision — yeh teeno cheezein services ke beech HTTP headers mein travel karti hain. |
+| **Propagation** | Trace context ek network hop survive kaise karta hai — caller header mein daalta hai, callee usse padh ke SAME trace continue karta hai, naya trace start nahi karta. |
+
+**Real-world analogy**: Ek courier package ka tracking number socho. Package ek warehouse se
+doosre warehouse jaata hai — har warehouse apna scan record banata hai (span), lekin tracking
+number (traceId) hamesha same rehta hai. Isi tracking number se tum poori journey dekh sakte ho,
+chahe package kitne bhi warehouses se guzra ho.
+
+### 8.3 Why Micrometer Tracing — Same Facade Pattern, Phir Se
+
+Module 4 mein humne seekha tha: **Micrometer metrics ke liye "SLF4J of metrics" hai** — ek baar
+instrument karo, backend baad mein switch karo. Yehi exact pattern **Micrometer Tracing** spans
+ke liye follow karta hai:
+
+```
+Tumhara Code → Micrometer Tracing API → [bridge] → Brave ya OpenTelemetry → [exporter] → Tempo / Jaeger / Zipkin
+```
+
+Is course mein **OpenTelemetry bridge** use kiya hai kyunki **OTLP** (OpenTelemetry Protocol)
+industry ka vendor-neutral wire format ban chuka hai — Tempo, Jaeger, Datadog, sab OTLP accept
+karte hain. Kal agar Tempo se hat ke kisi aur backend pe jaana ho, sirf exporter dependency
+badalni padegi — instrumentation code same rahega.
+
+### 8.4 Why Grafana Tempo
+
+Yeh course shuru se **Grafana ko single pane of glass** banane ki taraf design hua hai (Module 6).
+Tempo, Grafana Labs ka apna tracing backend hai — traces waheen aa jaate hain jahan pehle se
+metrics dashboards dikh rahe hain. Koi alag tool, alag login, alag UI nahi.
+
+**Deliberately NOT set up abhi**: Tempo ka **metrics-generator** (jo span data se Service Graph
+compute karke Prometheus mein push karta) aur Grafana ka **trace-to-logs** link (jo Loki maangta
+hai — Module 7 abhi pending hai). Dono add karna abhi possible tha, lekin bina inka data consume
+karne wale kisi component ke, yeh silently "configured dikhega, kaam kuch nahi karega" — bilkul
+wahi mistake jo humne Module 6 ke `datasource` template variable ke saath dekhi thi. Jab Module 7
+(Loki) ban jaayega, tab yeh dono add honge.
+
+### 8.5 Sampling — Har Request Trace Karna Kyun Galat Idea Hai (Production Mein)
+
+```properties
+management.tracing.sampling.probability=1.0   # DEV — sab trace karo
+management.tracing.sampling.probability=0.1   # PROD — sirf 10%
+```
+
+**DEV mein 1.0 kyun**: Explore karte waqt kuch bhi miss nahi hona chahiye — har request ka trace
+turant dikhna chahiye.
+
+**PROD mein 0.1 (ya kam) kyun**: High-throughput service pe HAR request trace karna:
+1. Storage cost — Tempo mein har span store hota hai, disk/object-storage bill badhta hai
+2. Zyadatar redundant — 10,000 identical successful requests mein se, tumhe 10,000 alag traces
+   nahi chahiye. Ek representative sample kaafi hai pattern dikhane ke liye.
+
+**Ek nuance jo abhi implement nahi hai lekin jaan lena zaroori hai**: agar sampling 10% pe hai,
+toh ho sakta hai woh **ek galat/failed request** hi sample na ho — aur exactly wahi trace tumhe
+sabse zyada chahiye tha! Production-grade setups **error-biased sampling** use karte hain: har
+successful request 10% sample hota hai, lekin **har** failed/error request **hamesha** trace hota
+hai, sampling rate se independent. Yeh custom `Sampler` implementation maangta hai — is module
+mein cover nahi kiya, lekin yeh jaanna zaroori hai ki plain percentage-based sampling ek
+trade-off hai, free lunch nahi.
+
+### 8.6 The MDC Collision Gotcha — Ek Real Bug Jo Humne Khud Pakड़ा
+
+Yeh section is module ka sabse important lesson hai.
+
+Module 2 mein `MdcRequestFilter` banaya tha jo apna khud ka `traceId` generate karta tha (random
+UUID) — us waqt real distributed tracing exist hi nahi karti thi, toh yeh ek **stopgap** tha.
+
+```java
+// Module 2 ka original code — real tracing se PEHLE likha gaya
+String traceId = httpRequest.getHeader(TRACE_ID_HEADER);
+if (traceId == null || traceId.isBlank()) {
+    traceId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+}
+MDC.put("traceId", traceId);
+```
+
+Jaise hi `micrometer-tracing-bridge-otel` add hua, Spring Boot **automatically** MDC mein
+`traceId` aur `spanId` daalna shuru kar deta hai — **exact same MDC key name** `"traceId"` use
+karke, jo humara custom filter bhi use kar raha tha.
+
+**Ab do independent systems ek hi key pe likh rahe hain:**
+- Custom filter: ek **random UUID** likhta hai jiska kisi real trace se koi relation nahi
+- Micrometer Tracing: **real trace ID** likhta hai jo Tempo mein bhi wahi hai
+
+Jo bhi last mein likhe woh jeetta hai — **non-deterministically**, filter ordering aur request
+scope timing pe depend karta hue. Worst case: logs mein ek `traceId` dikhega jo Tempo ke actual
+trace se **match hi nahi karega**. Yeh silently trace-to-log correlation ka poora point khatam
+kar deta hai — tum ek log line se `traceId` copy karke Tempo mein paste karoge, aur kuch nahi
+milega.
+
+**Fix**: Custom filter se manual `traceId` generation hata do poori tarah. Micrometer Tracing ko
+akela us MDC key ka owner banao. Filter mein sirf woh rakho jo Micrometer Tracing kabhi nahi
+jaan sakta — jaise `requestId` (client-facing correlation ID, tracing system se independent
+purpose) aur `userId` (business context).
+
+> **Yeh lesson sirf iss project tak limited nahi hai.** Jab bhi kisi existing codebase mein
+> real tracing add karo, sabse pehle grep karo: kahin koi manually `MDC.put("traceId", ...)`
+> ya `MDC.put("spanId", ...)` toh nahi kar raha? Agar hai, usse **hatao** — "dono chalne do,
+> dekhte hain" wala approach mat lo. Dono kabhi ek saath sahi se nahi chal sakte.
+
+### 8.6a A Second Gotcha — Disconnected Security Spans, Aur Documentation Verify Karne Ka Lesson
+
+Verification ke waqt Tempo mein "security filterchain before"/"after" naam se traces dikhe —
+lekin **apne alag, disconnected trace ID ke saath**, HTTP request trace ka child span bane bina.
+Ek orphan span jo kisi request se correlate hi nahi ho sakta, no-span se bhi bura hai — sirf
+search results mein noise hai.
+
+**Root cause**: `ObservationRegistry` bean exist karte hi (jo `micrometer-tracing-bridge-otel` add
+karta hai), Spring Security apni filter chain execution ki observations emit karna shuru kar deta
+hai.
+
+**Fix**: `SecurityObservationSettings` bean (Spring Security 6.4+). Lekin ek interesting twist
+yahan hua — documentation lookup se pehla method name mila (`shouldObserveFilterChains`) jo
+**compile hi nahi hua** — woh method actual Spring Security 6.5.1 (is project ke classpath) mein
+exist hi nahi karta. Guess dobara karne ke bajaye, project ki apni hi `.m2` repository se exact
+version ka `-sources.jar` extract karke **real source code** padha gaya. Asli API:
+
+```java
+@Bean
+public SecurityObservationSettings securityObservationSettings() {
+    return SecurityObservationSettings.withDefaults()
+            .shouldObserveRequests(false)   // NOT shouldObserveFilterChains — verify karo, guess mat karo
+            .build();
+}
+```
+
+> **Lesson jo is bug se seekhne layak hai**: Documentation (chahe kitni bhi reliable source se ho)
+> kabhi kabhi exact dependency version se match nahi karti. Jab compile error documentation ke
+> claim se contradict kare, toh **resolved JAR hi ground truth hai** — `mvn dependency:build-classpath`
+> ya local Maven repo se matching `-sources.jar` unzip karke dekhna, dobara guess karne se zyada
+> reliable hai.
+
+**Teesra round — "authorize request" spans ruke hi nahi.** Fix ke baad bhi, Tempo mein
+disconnected "authorize request" traces har ~15 seconds pe recur ho rahe the — exactly
+Prometheus ke `scrape_interval` ke barabar. Wajah: Prometheus khud `/actuator/prometheus` ko
+scrape karta hai, aur woh request bhi security filter chain ke authorization check se guzarti
+hai (dev ke `permitAll` chain mein bhi). Yeh koi one-time testing artifact nahi hai — **real
+deployment mein yeh hamesha chalta rahega**, kyunki monitoring traffic kabhi rukta nahi.
+
+`SecurityObservationSettings` mein `shouldObserveAuthorizations(boolean)` bhi hai (same source
+read se confirm kiya, dobara guess nahi):
+
+```java
+@Bean
+public SecurityObservationSettings securityObservationSettings() {
+    return SecurityObservationSettings.withDefaults()
+            .shouldObserveRequests(false)
+            .shouldObserveAuthorizations(false)
+            .build();
+}
+```
+
+> **Trade-off jo yahan accept kiya**: yeh **har** request ke authorization spans band kar deta
+> hai — sirf actuator/scrape traffic ke nahi, real `/api/**` business calls ke bhi. Zyada surgical
+> fix exist karta hai (path-based filter via custom `ObservationPredicate`, Spring Security ke
+> `AuthorizationObservationContext<T>` ke against) — lekin uska authorized object generic hai,
+> exact runtime type ek aur verification round maangta. Is project ka authorization simple JWT
+> role check hai (koi slow custom `AuthorizationManager` nahi), toh per-request authorization
+> span ki diagnostic value kam hai. Blanket disable accept kiya — teesri baar unverified
+> internals guess karne se better tha.
+
+### 8.7 What's Automatic vs. What You Still Write
+
+| Concern | Automatic? |
+|---|---|
+| Har incoming HTTP request ke liye span | ✅ Haan — zero code |
+| `traceId`/`spanId` MDC mein, har log line ke liye | ✅ Haan — zero code, bas bridge dependency chahiye |
+| Trace context outbound `RestTemplate`/`WebClient` calls mein propagate | ✅ Haan — zero code |
+| Ek specific business operation ka apna named child span | ❌ Nahi — `Tracer` API ya `@Observed` manually likhna padega |
+| JDBC/Hibernate query ka apna span | ❌ Nahi — alag library chahiye (`datasource-micrometer-spring-boot`), is module mein add nahi kiya |
+
+Yehi exact infrastructure-vs-business split hai jo humne [[observability-library-plan]] mein
+metrics ke liye discuss kiya tha — zyada tar automatic hai, baaki ek deliberate choice hai ki
+kya specifically instrument karne layak hai.
+
+### 8.8 Cross-Service Propagation — BiharOne Ka Real Use Case
+
+Agar Certificate Service, Payment Service ko `RestTemplate` se call kare, aur **dono** services
+mein yeh exact setup ho — koi extra code ki zaroorat nahi. Micrometer Tracing automatically
+outbound call pe `traceparent` header inject karta hai; receiving service automatically usse
+padh ke **same trace** continue karta hai, naya trace start nahi karta.
+
+Yehi Module 1 mein diya gaya poora payoff hai — lekin isme ek sharp condition hai: **yeh tabhi
+kaam karta hai jab har participating service mein yeh module apply ho**, sirf ek service mein
+nahi. Agar Certificate Service ke paas tracing hai lekin Payment Service ke paas nahi, trace
+Payment Service ki boundary pe **cut ho jaayega** — us se aage kya hua, kabhi nahi dikhega.
+
+### 8.9 Practical Setup — Jo Humne Implement Kiya
+
+> Poora implementation detail: `docs/guides/07-tracing-setup-guide.md`
+
+1. `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` — `pom.xml` mein
+2. `management.tracing.sampling.probability` + `management.otlp.tracing.endpoint` —
+   `application-dev.properties` mein
+3. `MdcRequestFilter.java` — manual `traceId` generation hataya (§8.6 dekho)
+4. `logback-spring.xml` — `spanId` add kiya dev pattern aur prod JSON fields mein
+5. `docker/tempo/tempo.yaml` + `docker-compose.yml` — Tempo container, OTLP receivers pe
+6. `docker/grafana/provisioning/datasources/tempo.yml` — Grafana ka Tempo datasource
+
+### 8.10 Key Takeaways
+
+1. **Tracing wahi gap fill karta hai jo logs aur metrics nahi kar sakte** — ek specific request
+   ke andar, cross-service, time kahan gaya.
+2. **Micrometer Tracing = same facade pattern jo Micrometer metrics ke liye tha.** Backend switch
+   karna = dependency change, instrumentation code same.
+3. **Zyada tar tracing automatic hai** — HTTP spans, MDC population, context propagation, sab
+   zero code. Sirf business-specific spans manual hote hain.
+4. **Sampling ek trade-off hai, free lunch nahi.** Dev mein 100%, prod mein kam — aur plain
+   percentage sampling galti se woh exact failed request miss kar sakta hai jo tumhe chahiye tha.
+5. **MDC collision ek real, silent bug hai** jo tab hota hai jab purani manual instrumentation
+   nayi automatic tracing ke saath coexist karne ki koshish karti hai. Hamesha purani cleanup
+   karo, dono ko chalne mat do.
+6. **Propagation sabhi participating services maangta hai.** Ek service mein tracing add karne se
+   poora system observable nahi ho jaata — trace har jagah cut jaayega jahan tracing missing hai.
 
 ---
 

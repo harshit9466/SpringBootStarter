@@ -1,0 +1,11 @@
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: loki
+    # "loki" = container name on the observability Docker network, same
+    # reasoning as the Prometheus and Tempo datasources.
+    url: http://loki:3100
+    access: proxy
+    editable: false
