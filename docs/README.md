@@ -160,8 +160,8 @@ curl http://localhost:3100/ready   # expect "ready" (may need to wait ~15s after
 | 6 | Grafana — Dashboards, RED method, Alerting | ✅ |
 | 7 | Logging Infrastructure — Loki direct-push, trace-to-logs correlation | ✅ |
 | 8 | Distributed Tracing — Micrometer Tracing, OTLP, Grafana Tempo | ✅ |
-| 9 | Production Architecture — End-to-end observability stack | ⏳ |
-| 10 | Production Readiness — PII masking, retention, compliance | ⏳ |
+| 9 | Production Architecture — Full BiharOne system, API Gateway, Kafka, cache | ✅ |
+| 10 | Production Readiness — PII masking, retention, alert policy, capacity, DR | ✅ |
 
 ---
 

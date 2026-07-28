@@ -17,8 +17,8 @@
 | 6 | [Grafana](#module-6--grafana) | ✅ |
 | 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ✅ |
 | 8 | [Distributed Tracing](#module-8--distributed-tracing) | ✅ |
-| 9 | [Production Architecture](#module-9--production-architecture) | ⏳ |
-| 10 | [Production Readiness](#module-10--production-readiness) | ⏳ |
+| 9 | [Production Architecture](#module-9--production-architecture) | ✅ |
+| 10 | [Production Readiness](#module-10--production-readiness) | ✅ |
 
 ---
 
@@ -2359,10 +2359,385 @@ Payment Service ki boundary pe **cut ho jaayega** — us se aage kya hua, kabhi 
 
 ## Module 9 — Production Architecture
 
-> _Content to be added_
+### 9.1 Why This Module Exists — Synthesis, Not New Infrastructure
+
+Modules 2 se 8 tak, humne har piece **ek service pe, isolation mein** banaya — structured
+logging, health checks, metrics, Prometheus, Grafana, security, tracing, Loki. Yeh module koi
+naya tool implement nahi karta. Yeh **zoom out** karta hai — dikhata hai in sab pieces ka real
+BiharOne-scale deployment mein exact jagah kya hai, aur woh pieces jo humne nahi banaye (API
+Gateway, Kafka, cache, multiple real microservices) kaise fit hote hain.
+
+> **Important honesty**: is module ke baad koi naya docker-compose service nahi milega. Yeh
+> module architecture samajhne ke liye hai — practice repo mein implement karne ke liye nahi.
+
+### 9.2 The Full BiharOne Production Architecture
+
+```
+                          Citizen Browser / Mobile App
+                                    │
+                                    ▼
+                    ┌───────────────────────────────┐
+                    │  API Gateway (Kong / NGINX)    │ ← single entry point, rate
+                    └───────────────┬───────────────┘   limiting, TLS termination
+                                    │
+                                    ▼
+                    ┌───────────────────────────────┐
+                    │  Keycloak (OAuth2 / JWT)       │ ← Module 5's SecurityConfig
+                    └───────────────┬───────────────┘   validates the token issued here
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        ▼                           ▼                           ▼
+┌────────────────┐        ┌────────────────┐        ┌──────────────────────┐
+│ Certificate     │◄──────►│ Payment         │        │ Document Verification │
+│ Service         │ Kafka  │ Service         │        │ Service                │
+│ (this project)  │ events │                 │        │                        │
+└────────┬────────┘        └────────┬────────┘        └───────────┬────────────┘
+         │                          │                              │
+         ▼                          ▼                              ▼
+┌────────────────┐        ┌────────────────┐        ┌──────────────────────┐
+│ PostgreSQL      │        │ PostgreSQL      │        │ PostgreSQL             │
+│ (own DB)        │        │ (own DB)        │        │ (own DB)               │
+└─────────────────┘        └─────────────────┘        └────────────────────────┘
+         │                          │                              │
+         └──────────────┬───────────┴──────────────┬───────────────┘
+                         ▼
+                 ┌────────────────┐
+                 │  Redis Cache    │ ← shared, cache-aside pattern
+                 └────────────────┘
+
+Cross-cutting — EVERY service above reports to the SAME shared instances:
+   Prometheus    ← scrapes /actuator/prometheus on every service      (Module 4/5)
+   Grafana       ← dashboards over Prometheus + Loki + Tempo          (Module 6)
+   Loki          ← every service pushes its logs                     (Module 7)
+   Tempo         ← every service exports traces, propagated via
+                   traceparent header across every hop                (Module 8)
+   Alertmanager  ← fires from Prometheus alert rules → Slack/PagerDuty (§9.8)
+```
+
+### 9.3 Har Module Ka Kaam Is Diagram Mein Kahan Hai
+
+| Module | Kya Banaya | Diagram Mein Kahan |
+|---|---|---|
+| 2 | Structured logging, MDC | **Har** service box ke andar |
+| 3 | Actuator health checks | API Gateway / Kubernetes liveness-readiness probes ko feed karta hai |
+| 5 (security) | Keycloak JWT validation | Auth boundary — koi bhi service tak pahunchne se pehle |
+| 4/5 (metrics) | Micrometer + Prometheus | Cross-cutting metrics layer — har service scrape hoti hai |
+| 6 | Grafana | Visualization layer — Prometheus + Loki + Tempo teeno ke upar |
+| 7 | Loki | Cross-cutting logs layer |
+| 8 | Tempo | Cross-cutting traces layer — har service hop ke through propagate |
+
+**Key insight**: RED dashboard, log aggregation, tracing — yeh sab **per-service concern nahi**
+hain, yeh **platform-level cross-cutting concerns** hain. Har naya service jo add hota hai (jaise
+Payment Service), usse sirf apna hi Prometheus/Loki/Tempo setup nahi karna — usse bas is EXISTING
+shared platform se connect hona hai (guides 01-08 follow karke), aur automatically poori
+visibility mil jaati hai.
+
+### 9.4 API Gateway — Kyun Zaroori Hai
+
+Agar citizens directly Certificate Service, Payment Service, etc. ko alag-alag URLs pe hit karte,
+har service ko apna khud ka rate limiting, TLS, aur routing logic likhna padta. API Gateway
+(Kong/NGINX) yeh sab **ek jagah centralize** karta hai:
+- Single entry point — citizens ko sirf ek URL pata hona chahiye
+- Rate limiting — ek bura actor sirf ek service ko flood nahi kar sakta, gateway pe hi rok diya jaata hai
+- TLS termination — certificates ek jagah manage hote hain, har service mein nahi
+
+**Yeh course is layer ko implement nahi karta** — lekin jaanna zaroori hai ki `/actuator/**` jaisa
+sensitive path, jo humne Module 3 mein "network firewall se internal-only rakho" bola tha, real
+deployment mein **exactly yehi API Gateway hai jo woh firewall implement karta hai.**
+
+### 9.5 Kafka — Async Event-Driven Communication Kyun
+
+**Scenario**: Certificate Service ek certificate issue karta hai. Notification Service ko SMS
+bhejna hai citizen ko. Agar Certificate Service directly, synchronously Notification Service ko
+call kare (jaise humne Module 8 mein RestTemplate/WebClient discuss kiya), aur Notification
+Service us waqt down ho, poora certificate issuance fail ho jaayega — ek unrelated service ki
+wajah se.
+
+**Kafka isse decouple karta hai**: Certificate Service ek event publish karta hai
+(`CertificateIssued`) aur aage badh jaata hai. Notification Service apni speed se us event ko
+consume karta hai, jab bhi woh ready ho. Certificate issuance kabhi bhi Notification Service ke
+downtime se block nahi hota.
+
+> **Outbox Pattern** (jo Section 25 mein already mention hai): event ko database transaction ke
+> **SAME transaction** mein likhna hai jisme business state change hota hai, phir ek separate
+> relay process usse Kafka tak async publish karta hai. Yeh guarantee deta hai ki event kabhi
+> "lost" nahi hoga — chahe Kafka publish fail ho jaaye, DB transaction commit ho chuka hai, retry
+> ho sakta hai.
+
+### 9.6 Redis Cache — Cache-Aside Pattern
+
+Agar har certificate status check DB tak jaaye, aur ek popular certificate baar-baar check ho
+raha ho, DB unnecessarily load ho raha hoga same data ke liye. **Cache-aside pattern**:
+1. Request aaye → pehle Redis mein check karo
+2. Cache hit → seedha wahi se return karo, DB touch mat karo
+3. Cache miss → DB se fetch karo, Redis mein store karo (agli baar ke liye), phir return karo
+
+Yeh directly Module 4's DB Connection Pool dashboard se connect hota hai — agar tumhara HikariCP
+pool baar-baar saturate ho raha hai same query ke liye, cache-aside pattern woh load kam kar
+sakta hai.
+
+### 9.7 Ek Real Request Ko Poore System Mein Trace Karna
+
+Concrete example — citizen "Download Certificate" click karta hai:
+
+```
+1. Citizen Browser → API Gateway
+   [traceId generated: abc123]
+
+2. API Gateway → Keycloak (JWT validate)
+   [traceId=abc123 propagate hota hai]
+
+3. API Gateway → Certificate Service: GET /api/v1/certificate/download
+   [traceId=abc123, spanId=span1]
+   → MdcRequestFilter: requestId assign, MDC set (Module 2)
+   → Micrometer Tracing: span start (Module 8)
+   → Redis check: cache MISS
+   → PostgreSQL query: certificate details fetch
+   → Log line likha jaata hai: "Fetching certificate. certificateNo=BR/2026/000002234"
+     [traceId=abc123] ke saath — turant Loki mein pahunch jaata hai (Module 7)
+   → http_server_requests_seconds metric increment (Module 4) — Prometheus turant scrape kar sakta hai
+
+4. Certificate Service → Document Verification Service (RestTemplate call)
+   [SAME traceId=abc123, NAYA spanId=span2 — automatic propagation, Module 8]
+   → Verification Service apna kaam karta hai, apna span close karta hai
+
+5. Certificate Service → Kafka: publish "CertificateDownloaded" event
+   [event mein bhi traceId carry ho sakta hai, agar explicitly propagate kiya jaaye]
+
+6. Response citizen ko wapas — poora trace ab Tempo mein ek single view mein dikhta hai,
+   sabhi services ke spans ke saath, sabhi logs Loki mein isi traceId se searchable
+```
+
+Yeh EXACTLY wahi scenario hai jo Module 1.7 mein diagram se introduce kiya tha ("WHERE is the
+2400ms going?") — ab tumhare paas actual tooling hai us sawaal ka jawaab dene ke liye.
+
+### 9.8 Alerting Insaan Tak Kaise Pahunchti Hai
+
+Module 6.6 mein humne Tier 1/2/3 alert system discuss kiya tha. Yeh actually kaam kaise karta hai:
+
+```
+Prometheus Alert Rule fires (e.g. error rate > 1% for 5 min)
+        │
+        ▼
+   Alertmanager receives it
+        │
+        ▼
+   Routing Tree evaluate karta hai:
+   - severity=critical  → PagerDuty (turant page, on-call jaage)
+   - severity=warning   → Slack channel #biharone-alerts
+   - severity=info      → sirf dashboard, koi notification nahi
+        │
+        ▼
+   Grouping + Deduplication: agar 50 pods se same alert aa rahi hai, ek hi notification
+   Silencing: planned maintenance ke waqt specific alerts temporarily mute
+```
+
+Alertmanager ek separate component hai jo humne is course mein implement nahi kiya — Prometheus
+sirf alert rules EVALUATE karta hai aur Alertmanager ko bhejta hai; routing/grouping/notification
+Alertmanager ka kaam hai.
+
+### 9.9 Incident Response Lifecycle — Ab Concrete Tooling Ke Saath
+
+Module 1.10 mein humne 6 phases define kiye the. Ab har phase ke liye **exact tool** hai:
+
+| Phase | Module 1 Mein | Ab Konsa Tool |
+|---|---|---|
+| **Detection** | "Automated alert fires" | Prometheus alert rule → Alertmanager → PagerDuty (§9.8) |
+| **Triage** | "Kitna scope hai?" | Grafana RED dashboard (Module 6) — kaunsi service, kitna error % |
+| **Diagnosis** | "Exact error kya hai?" | Loki logs (Module 7) + Tempo traces (Module 8) — WHY fail hua |
+| **Mitigation** | "Bleeding roko" | Rollback, feature flag off, scale up |
+| **Resolution** | "Stable ho gaya" | Grafana dashboard wapas normal — Error Rate 0%, latency baseline pe |
+| **Post-Mortem** | "Kya seekha" | Exact metrics/logs/traces evidence ke roop mein postmortem doc mein |
+
+Yeh loop close karta hai — Module 1 mein humne yeh phases sirf THEORY mein describe kiye the.
+Ab har phase ke peeche real, verified tooling hai jo humne khud banaya hai.
+
+### 9.10 Key Takeaways
+
+1. **Yeh module synthesis hai, naya infra nahi** — Modules 2-8 ke pieces ko ek bade,
+   realistic BiharOne-scale picture mein fit karke dikhaya.
+2. **Observability platform-level concern hai, per-service nahi** — naya service sirf existing
+   shared Prometheus/Loki/Tempo se connect hota hai, apna khud ka stack nahi banata.
+3. **API Gateway, Kafka, Redis** — teeno real production zaroorat hain jo yeh course implement
+   nahi karta, lekin unka role samajhna zaroori hai poori picture ke liye.
+4. **Ek trace, poore system mein** — Module 8 ka propagation feature yehi hai jo ek request ko
+   multiple services ke through follow karne deta hai, bina manual correlation ke.
+5. **Incident Response Lifecycle ab theory nahi, practice hai** — har phase ka apna verified tool
+   hai jo humne is course mein banaya.
 
 ---
 
 ## Module 10 — Production Readiness
 
-> _Content to be added_
+### 10.1 Why This Module Exists — The Go-Live Checklist
+
+Modules 1-9 ne bataya **kaise** observability banate hain. Yeh module poochta hai: **kya yeh
+genuinely production-ready hai**, real citizens ka real data handle karne ke liye? Yeh course ka
+"go-live checklist" hai.
+
+### 10.2 Logging Standards — Module 2 Ko Formalize Karna
+
+Module 1.5 mein humne ek "NEVER log this" list di thi (passwords, PII, health data, credit
+cards, OTPs). Production mein yeh sirf guideline nahi, ek **enforced team policy** honi chahiye:
+
+```
+BiharOne Logging Policy (excerpt):
+1. Koi bhi log statement jo request/response body log karta hai, PII fields explicitly
+   exclude/mask kiye bina — code review mein REJECT.
+2. ERROR level = koi bhi engineer ko action lena hai. Agar action nahi lena, WARN use karo.
+3. Har naya microservice MdcRequestFilter (Module 2) implement karega — bina iske PR merge nahi hoga.
+4. Log statements mein hamesha structured fields use karo (Module 2's parameterized logging),
+   string concatenation kabhi nahi.
+```
+
+### 10.3 PII Masking — BiharOne Ke Liye Concrete Implementation
+
+BiharOne citizen data handle karta hai — Aadhaar number, phone number, address, bank account
+(DBT ke liye). Yeh accidentally logs mein leak ho sakta hai agar koi engineer bina soche
+`log.info("Processing citizen: {}", citizen)` likh de aur `citizen.toString()` mein Aadhaar ho.
+
+**Custom Logback Converter** — yeh Logback ka stable, well-documented extension point hai
+(`ClassicConverter`), koi obscure/version-specific API nahi:
+
+```java
+package com.biharone.logging;
+
+import ch.qos.logback.classic.pattern.ClassicConverter;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import java.util.regex.Pattern;
+
+/*
+ * Registers as a custom %maskedMsg conversion word in logback-spring.xml.
+ * Runs on EVERY log message before it's written — masks Aadhaar-shaped and
+ * phone-shaped number sequences regardless of which log statement produced them.
+ */
+public class PiiMaskingConverter extends ClassicConverter {
+
+    private static final Pattern AADHAAR_PATTERN = Pattern.compile("\\b\\d{4}\\s?\\d{4}\\s?\\d{4}\\b");
+    private static final Pattern PHONE_PATTERN = Pattern.compile("\\b[6-9]\\d{9}\\b");
+
+    @Override
+    public String convert(ILoggingEvent event) {
+        String message = event.getFormattedMessage();
+        message = AADHAAR_PATTERN.matcher(message).replaceAll("XXXX-XXXX-XXXX");
+        message = PHONE_PATTERN.matcher(message).replaceAll("XXXXXXXXXX");
+        return message;
+    }
+}
+```
+
+`logback-spring.xml` mein registration:
+```xml
+<conversionRule conversionWord="maskedMsg" converterClass="com.biharone.logging.PiiMaskingConverter" />
+
+<pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{40} - %maskedMsg%n</pattern>
+```
+
+**Yeh ek defense-in-depth layer hai, PEHLI layer nahi** — engineers ko phir bhi trained hona
+chahiye PII explicitly log NA karne ke liye (Section 10.2). Yeh converter ek **safety net** hai
+jab koi galti se PII-shaped data log kar de.
+
+### 10.4 Log Retention & Compliance
+
+Yeh topic already **extreme detail** mein cover ho chuka hai — dekho
+[`object-storage-for-observability.md`](../object-storage-for-observability.md). Recap:
+- **Config** (`retention_period` + `compactor.retention_enabled`) batata hai kitni der rakhna hai
+- **Infrastructure** (MinIO ya OpenShift Data Foundation, NFS reject kiya gaya) batata hai kya
+  woh data itni der genuinely survive karega
+- Government project hone ki wajah se public cloud (AWS S3) ruled out — self-hosted
+  S3-compatible storage hi rasta hai
+
+### 10.5 Alert Fatigue — Module 6.6 Ko Policy Banana
+
+Module 6.6 mein Tier 1/2/3 system introduce kiya tha. Production policy:
+
+```
+Rule: Har alert ke saath ek runbook link ZAROORI hai (§10.6).
+Rule: Agar ek alert 3 mahine mein kabhi actionable nahi nikla, usse DELETE ya threshold adjust karo.
+Rule: CRITICAL tier sirf tab jab paging genuinely zaroori ho — over-paging se on-call
+      engineers real emergencies ko bhi ignore karna seekh jaate hain.
+```
+
+### 10.6 Incident Response Runbook — Template
+
+```
+Runbook: Certificate Service — High Error Rate
+
+Trigger: error rate > 1% for 5 minutes (Prometheus alert: CertServiceHighErrorRate)
+
+Immediate Checks:
+1. Grafana RED dashboard → Certificate Service → konsa endpoint fail ho raha hai?
+2. Loki → {app="certificate-service"} | level="ERROR" → exact error message kya hai?
+3. Tempo → koi failed trace dhoondo → kaunsa downstream service/DB culprit hai?
+
+Common Causes & Fixes:
+- DB connection pool exhausted  → HikariCP pool size check (Module 6 dashboard)
+- Downstream service timeout    → check Document Verification Service ka health
+- Recent deployment              → rollback ke baare mein socho
+
+Escalation: Agar 15 minutes mein resolve nahi hota → escalate to [team lead]
+```
+
+### 10.7 Capacity Planning — Metrics Jo Already Ban Chuki Hain, Unse Forecast Karna
+
+Module 5.3 mein humne `predict_linear()` PromQL function ka naam liya tha, bina context ke. Ab
+uska real use case:
+
+```promql
+# Agar disk usage isi rate se badhta raha, 24 ghante mein full ho jaayega kya?
+predict_linear(node_filesystem_free_bytes[1h], 24 * 3600) < 0
+```
+
+Yeh humare already-built JVM Heap, DB Pool, aur disk metrics (Module 4) ko future prediction ke
+liye use karta hai — "kab tumhe zyada resources chahiye honge," reactive firefighting ke bajaye.
+
+### 10.8 Cost Optimization — Recurring Themes Ek Jagah
+
+Is poore course mein cost-conscious decisions baar-baar aaye — yahan consolidate:
+
+| Lever | Kahan Discuss Hua | Trade-off |
+|---|---|---|
+| Sampling rate | Module 8.5 | Dev 100%, prod 10% — kam traces store karo, phir bhi patterns dikhein |
+| Tag/Label cardinality | Module 4/5, 7.4 | Bounded values hi tag/label banao — warna storage explode ho jaata hai |
+| Log retention period | §10.4 | Kitni der rakhna genuinely zaroori hai vs. "hamesha ke liye" |
+| Structured metadata vs labels | Module 7.4 | High-cardinality data metadata mein, index mein nahi |
+
+### 10.9 High Availability & Disaster Recovery — "Who Watches the Watchers?"
+
+Agar Prometheus, Loki, Tempo, ya Grafana khud down ho jaayein — **exactly incident ke waqt jab
+tumhe unki sabse zyada zaroorat hai** — tum blind ho jaate ho.
+
+- **MinIO/ODF ki apni erasure coding** (dekho `object-storage-for-observability.md` Part 1/2) —
+  observability data khud bhi redundant storage pe hona chahiye, single disk pe nahi
+- **Redundant Prometheus** — production mein aksar 2 Prometheus instances same targets scrape
+  karte hain, taaki ek fail ho toh doosra data collect karta rahe
+- **Alertmanager clustering** — multiple Alertmanager instances taaki alert routing khud ek
+  single point of failure na ho
+
+Yeh meta-lesson hai: **observability stack khud bhi production infrastructure hai** — usse
+"just a side tool" ki tarah treat mat karo, usse bhi reliability engineering chahiye.
+
+### 10.10 Poore Course Ka Final Summary
+
+```
+OBSERVABILITY = LOGS + METRICS + TRACES
+
+Module 1  → Kyun zaroori hai — Monitoring vs Observability, SLI/SLO/SLA
+Module 2  → Logs — SLF4J, Logback, MDC
+Module 3  → Health — Actuator, Kubernetes probes
+Module 4  → Metrics — Micrometer, Counters/Timers, cardinality discipline
+Module 5  → Prometheus — Pull model, PromQL, TSDB
+Module 6  → Grafana — RED/USE dashboards, provisioning as code
+Module 7  → Logs centralized — Loki, direct-push, label/metadata discipline
+Module 8  → Traces — Micrometer Tracing, OTLP, Tempo, cross-service propagation
+Module 9  → Poori architecture — API Gateway, Kafka, cache, sab kuch ek saath
+Module 10 → Production-ready — PII masking, retention, alert policy, capacity, DR
+
+Ek incident ke waqt:
+  DETECTION   → Alertmanager pages you (Module 6, 9)
+  TRIAGE      → Grafana RED dashboard batata hai SCOPE (Module 6)
+  DIAGNOSIS   → Loki + Tempo batate hain WHY (Module 7, 8)
+  MITIGATION  → Tumhara judgment, informed by data
+  RESOLUTION  → Dashboard confirms wapas normal
+  POST-MORTEM → Exact evidence, guesswork nahi
+```
