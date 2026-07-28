@@ -1,12 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "type": "datasource",
-      "pluginId": "prometheus"
-    }
-  ],
   "title": "Spring Boot — RED Dashboard",
   "uid": "spring-boot-red",
   "description": "RED method dashboard: Rate, Errors, Duration — for any Spring Boot 3.x service instrumented with Micrometer + Prometheus",
@@ -20,23 +12,24 @@
   "templating": {
     "list": [
       {
-        "name": "datasource",
-        "type": "datasource",
-        "label": "Data Source",
-        "pluginId": "prometheus",
-        "hide": 0,
-        "refresh": 1
-      },
-      {
         "name": "application",
         "type": "query",
         "label": "Application",
-        "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(http_server_requests_seconds_count, application)",
-        "query": "label_values(http_server_requests_seconds_count, application)",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(application)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(application)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
         "refresh": 2,
         "sort": 1,
-        "hide": 0
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "regex": ""
       }
     ]
   },
@@ -54,7 +47,7 @@
       "title": "Request Rate (req/s)",
       "description": "Total HTTP requests per second across all endpoints. Baseline establish karo — spike = traffic surge or retry storm.",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "sum(rate(http_server_requests_seconds_count{application=\"$application\"}[5m]))",
@@ -80,10 +73,10 @@
       "title": "Error Rate (%)",
       "description": "% of HTTP 5xx responses. SLO threshold: < 1%. Alert fires at > 1% sustained for 5 minutes.",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "100 * sum(rate(http_server_requests_seconds_count{application=\"$application\", status=~\"5..\"}[5m])) / sum(rate(http_server_requests_seconds_count{application=\"$application\"}[5m]))",
+          "expr": "100 * sum(rate(http_server_requests_seconds_count{application=\"$application\", status=~\"5..\"}[5m])) / sum(rate(http_server_requests_seconds_count{application=\"$application\"}[5m])) or vector(0)",
           "legendFormat": "error %",
           "refId": "A"
         }
@@ -114,7 +107,7 @@
       "title": "P95 Latency (ms)",
       "description": "95th percentile response time. 95% of requests complete within this duration. SLO: < 500ms.",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"$application\"}[5m]))) * 1000",
@@ -164,7 +157,7 @@
       "title": "JVM Heap Usage",
       "description": "Heap utilization. Alert at > 80% sustained — GC pressure increases sharply beyond this.",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "100 * sum(jvm_memory_used_bytes{application=\"$application\", area=\"heap\"}) / sum(jvm_memory_max_bytes{application=\"$application\", area=\"heap\"})",
@@ -200,7 +193,7 @@
       "title": "DB Connection Pool — Active vs Max",
       "description": "HikariCP pool usage. Saturation = pending > 0 (threads waiting for a connection). Alert at utilization > 70%.",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "hikaricp_connections_active{application=\"$application\"}",
@@ -241,7 +234,7 @@
       "title": "HTTP Request Breakdown by Status",
       "description": "Request count split by HTTP status code. Shows volume of 2xx (success), 4xx (client errors), 5xx (server errors).",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "sum by (status) (rate(http_server_requests_seconds_count{application=\"$application\"}[5m]))",
@@ -273,7 +266,7 @@
       "title": "Products Created (total)",
       "description": "Monotonically increasing counter. Rate drop to 0 = potential issue with create flow.",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 19 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "increase(products_added_total{application=\"$application\"}[1h])",
@@ -300,7 +293,7 @@
       "title": "Products Not Found (total)",
       "description": "Counter for 404 product lookups. Spike = stale client references or bad data.",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 19 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "increase(products_not_found_total{application=\"$application\"}[1h])",
@@ -327,7 +320,7 @@
       "title": "Product Operation Duration — P50 / P95 / P99",
       "description": "Custom Timer metric from ProductServiceImpl. Shows tail latency for individual business operations.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le, operation) (rate(product_operation_duration_seconds_bucket{application=\"$application\"}[5m]))) * 1000",
