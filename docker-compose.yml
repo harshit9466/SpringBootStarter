@@ -116,6 +116,16 @@ services:
     container_name: loki
     restart: unless-stopped
 
+    # Loki's official image runs as a non-root user by default. A freshly-created
+    # Docker named volume (loki_data) is root-owned until something writes to it,
+    # so Loki's own "mkdir /loki/chunks" fails with "permission denied" on first
+    # boot — a well-documented, common issue with this exact image.
+    # Running as root here is the pragmatic fix for LOCAL DEV. Real production
+    # setups should keep Loki non-root and instead run a one-time init container
+    # that does `chown` on the volume to Loki's actual UID before Loki starts —
+    # not done here to keep this repo's docker-compose focused on local verification.
+    user: "0:0"
+
     command:
       - '-config.file=/etc/loki/loki-config.yaml'
 

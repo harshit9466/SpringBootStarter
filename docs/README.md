@@ -24,7 +24,8 @@ docs/
     ├── 04-prometheus-setup-guide.md
     ├── 05-security-setup-guide.md
     ├── 06-grafana-setup-guide.md
-    └── 07-tracing-setup-guide.md
+    ├── 07-tracing-setup-guide.md
+    └── 08-logging-infrastructure-setup-guide.md
 ```
 
 ---
@@ -42,6 +43,7 @@ Read and follow these guides **in this exact order**. Each guide is self-contain
 | 5 | `guides/05-security-setup-guide.md` | OAuth2 Resource Server (Keycloak JWT), `CurrentPrincipal`, `KeycloakJwtConverter` |
 | 6 | `guides/06-grafana-setup-guide.md` | Provisioned datasource + RED-method dashboard, Grafana 11 gotchas |
 | 7 | `guides/07-tracing-setup-guide.md` | Micrometer Tracing + OTLP → Grafana Tempo, MDC collision fix |
+| 8 | `guides/08-logging-infrastructure-setup-guide.md` | Grafana Loki via direct-push appender, trace-to-logs correlation |
 
 **Each guide includes:**
 - Maven + Gradle dependency blocks
@@ -74,6 +76,9 @@ Read and follow these guides **in this exact order**. Each guide is self-contain
      ↓
 07-tracing    → Adds Tempo alongside Prometheus/Grafana; fixes the MDC traceId
                 collision against step 1's MdcRequestFilter
+     ↓
+08-logging-infra → Adds Loki; wires trace-to-logs correlation into step 7's
+                   Tempo datasource, which is only meaningful once tracing exists
 ```
 
 Do **NOT** apply the security guide (step 5) before verifying steps 1–4 work without auth.
@@ -84,6 +89,10 @@ Step 7 (tracing) must come after step 1 (logging) is actually in place, not just
 it specifically modifies the `MdcRequestFilter` step 1 created. Applying tracing to a project
 that skipped step 1 means there's no existing MDC filter to fix, so that part of the guide
 doesn't apply.
+
+Step 8 (logging infrastructure) must come after step 7 (tracing) — its trace-to-logs wiring
+modifies the Tempo datasource step 7 created. Doing step 8 before step 7 means there's no Tempo
+datasource yet to link Loki into.
 
 ---
 
@@ -127,6 +136,11 @@ curl -s http://localhost:8082/actuator/prometheus | head -30
 # 7. Tracing (guide 07 — after adding the Tempo service and restarting the app)
 curl http://localhost:8082/api/products
 # then: http://localhost:3000 → Explore → Tempo → Search → spring-boot-starter
+
+# 8. Logging infrastructure (guide 08 — after adding the Loki service)
+curl http://localhost:3100/ready   # expect "ready" (may need to wait ~15s after startup)
+# then: http://localhost:3000 → Explore → Loki → query {app="spring-boot-starter"}
+# and: Explore → Tempo → click a trace → click the span bar → "Logs for this span" button
 ```
 
 ---
@@ -144,7 +158,7 @@ curl http://localhost:8082/api/products
 | 4 | Micrometer — MeterRegistry, Counters, Timers, Percentiles | ✅ |
 | 5 | Prometheus — Pull model, TSDB, PromQL, High cardinality | ✅ |
 | 6 | Grafana — Dashboards, RED method, Alerting | ✅ |
-| 7 | Logging Infrastructure — Loki, Fluent Bit, Elasticsearch | ⏳ |
+| 7 | Logging Infrastructure — Loki direct-push, trace-to-logs correlation | ✅ |
 | 8 | Distributed Tracing — Micrometer Tracing, OTLP, Grafana Tempo | ✅ |
 | 9 | Production Architecture — End-to-end observability stack | ⏳ |
 | 10 | Production Readiness — PII masking, retention, compliance | ⏳ |

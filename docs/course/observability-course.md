@@ -15,7 +15,7 @@
 | 4 | [Micrometer](#module-4--micrometer) | ✅ |
 | 5 | [Prometheus](#module-5--prometheus) | ✅ |
 | 6 | [Grafana](#module-6--grafana) | ✅ |
-| 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ⏳ |
+| 7 | [Logging Infrastructure](#module-7--logging-infrastructure) | ✅ |
 | 8 | [Distributed Tracing](#module-8--distributed-tracing) | ✅ |
 | 9 | [Production Architecture](#module-9--production-architecture) | ⏳ |
 | 10 | [Production Readiness](#module-10--production-readiness) | ⏳ |
@@ -1952,7 +1952,161 @@ curl http://localhost:8082/api/products/999   # 404 — error metric
 
 ## Module 7 — Logging Infrastructure
 
-> _Content to be added_
+> See implementation: `docs/guides/08-logging-infrastructure-setup-guide.md`,
+> `docker/loki/loki-config.yaml`, `src/main/resources/logback-spring.xml`
+
+### 7.1 Kyun Yeh Module Ab Zaroori Hai
+
+Module 2 tak, har service apne logs sirf **locally** likhti thi — dev mein console pe, prod mein
+ek JSON file mein. Module 4-6 mein humne metrics ko Prometheus mein aur Module 8 mein traces ko
+Tempo mein **centralize** kiya. Lekin logs abhi bhi wahi purani problem face karte hain jo Module 1
+mein describe ki thi: agar Certificate Service mein ek incident aaye, aur woh 4 alag pods pe
+chal rahi ho, "har pod mein SSH karke log file grep karo" scale nahi karta.
+
+**Loki** yehi gap fill karta hai — Prometheus jaisa hi centralization, lekin metrics ki jagah logs
+ke liye.
+
+### 7.2 Grafana Loki Kyun (Elasticsearch/Splunk Nahi)
+
+Yeh poora course Grafana ko single pane of glass banane ki taraf design hua hai (Module 6, 8).
+Loki Grafana Labs ka apna log aggregation system hai — logs waheen aa jaate hain jahan metrics
+dashboards aur traces pehle se dikh rahe hain.
+
+**Key technical difference Elasticsearch se**: Loki sirf **labels** ko index karta hai (chhote,
+bounded metadata jaise `app`, `level`) — poore log line ka text nahi. Yehi high-cardinality
+discipline jo humne Module 4/5 mein Prometheus tags ke liye seekhi thi, **yahan bhi bilkul waisi
+hi apply hoti hai.**
+
+### 7.3 Direct Push Kyun (Promtail Nahi)
+
+Production mein logs Loki tak pahunchne ka standard tarika ek **agent** hai (Promtail, ya uska
+successor Grafana Alloy) jo log files ya container stdout ko "tail" karke Loki ko bhejta hai. Yeh
+model assume karta hai ki logs kahin aisi jagah land karte hain jahan agent padh sake — ek file,
+ya container ka stdout stream.
+
+Humara Spring Boot app **host pe** chalta hai, kisi container ke andar nahi (jaan-bujh kar, fast
+local restarts ke liye). Toh koi container stdout hi nahi hai jise koi agent tail kare. Isliye
+**`loki-logback-appender`** use kiya — yeh JVM se seedha Loki ki HTTP push API ko log events bhej
+deta hai, bilkul wahi reasoning jo Module 8 mein Tempo ke OTLP export ke liye use ki thi.
+
+> **Yeh dev-environment ka decision hai, universal nahi.** Real Kubernetes/OKD deployment mein
+> yeh badal jaata hai — dekho §7.9.
+
+### 7.4 Sabse Important Design Decision — Labels vs. Structured Metadata
+
+```xml
+<labels>
+    app = ${APP_NAME}
+</labels>
+<structuredMetadata>
+    level = %level
+    traceId = %X{traceId:-}
+    spanId = %X{spanId:-}
+    requestId = %X{requestId:-}
+</structuredMetadata>
+```
+
+`<labels>` Loki ke **indexed** fields hain — bilkul same high-cardinality rule jo Prometheus tags
+ke liye tha. Sirf `app` yahan label hai. Agar `traceId` ko label bana dete, yeh EXACTLY wahi
+mistake hoti jo Module 4 mein warn ki thi — Prometheus metric ko unique request ID se tag karna.
+Har request ek naya label value banata, aur Loki ka index bina limit ke badhta jaata jab tak
+system fail na ho jaaye.
+
+`<structuredMetadata>` per-log-line data (`traceId`, `spanId`, `requestId`) attach karta hai jo
+poori tarah queryable/filterable rehta hai, **bina index ka hissa bane.** Yehi wajah hai ki
+high-cardinality values (traceId — har request ka apna unique value) yahan jaate hain, labels
+mein nahi.
+
+### 7.5 Practical Setup — Jo Humne Implement Kiya
+
+> Poora implementation detail: `docs/guides/08-logging-infrastructure-setup-guide.md`
+
+1. `loki-logback-appender` dependency — `pom.xml` mein
+2. `logback-spring.xml` dev profile mein `LOKI` appender add — CONSOLE ke saath saath, alag nahi
+3. `docker/loki/loki-config.yaml` + `docker-compose.yml` — Loki container, verified official
+   single-node config se (guess nahi kiya, Loki version ke beech schema format badalta rehta hai)
+4. `docker/grafana/provisioning/datasources/loki.yml` — Grafana ka Loki datasource
+5. Module 8 ka deferred kaam close kiya — Tempo datasource mein `tracesToLogsV2` add,
+   Loki se link karte hue
+
+### 7.6 A Real Gotcha Found During Verification — Permission Denied
+
+Verification ke waqt Loki crash-loop kar raha tha:
+
+```
+mkdir /loki/chunks: permission denied
+error creating object client
+```
+
+**Root cause**: Loki ka official Docker image **non-root user** ke roop mein chalta hai. Ek
+freshly-created Docker named volume by-default **root-owned** hota hai jab tak koi usme likhe
+nahi. Non-root Loki jab pehli baar `mkdir /loki/chunks` karne ki koshish karta hai us root-owned
+volume ke andar, permission denied milta hai. Yeh `grafana/loki` images ke saath ek **well-known,
+common issue** hai (verified GitHub issues se, guess nahi kiya).
+
+**Local dev ka pragmatic fix**:
+```yaml
+loki:
+  user: "0:0"   # root ke roop mein chalao — permission mismatch bypass ho jaata hai
+```
+
+> **Real production mein yeh mat karna** — waha Loki ko non-root hi rehne do, aur ek one-time
+> init container use karo jo Loki start hone se pehle volume ka ownership `chown` kare. Zyada
+> setup, lekin running container ki security posture weaken nahi karta. Is repo mein isliye nahi
+> kiya kyunki yeh docker-compose sirf local verification ke liye hai, production ke liye nahi.
+
+### 7.7 What's Automatic vs. What You Still Write
+
+| Concern | Automatic? |
+|---|---|
+| App jo bhi log emit karta hai, Loki tak pahunchna | ✅ Haan — ek appender add karo existing root logger mein |
+| `traceId`/`spanId` har log line pe Loki mein | ✅ Haan — same MDC keys padhta hai jo Module 8 already populate karta hai |
+| Tempo span se seedha uske exact log lines tak jump | ✅ Haan, ek baar wire hone ke baad — Grafana ka `tracesToLogsV2` feature |
+| Label vs structured metadata ka decision | ❌ Nahi — yeh deliberate design choice hai, deta hai galat karne pe cardinality problem |
+| Compliance-grade retention (6 mahine) | ❌ Nahi — alag topic, dekho `docs/object-storage-for-observability.md` |
+
+### 7.8 Retention Aur Durable Storage — Ek Alag Discussion
+
+Is module mein Loki `filesystem` storage use karta hai — local Docker volume pe, koi explicit
+retention policy ke bina (matlab data indefinitely rehta hai jab tak disk full na ho). Yeh
+**verification ke liye theek hai, real BiharOne production ke liye nahi.**
+
+Government project hone ki wajah se public cloud object storage (AWS S3) allowed nahi hai. Iska
+poora, extreme-detailed analysis (MinIO vs OpenShift Data Foundation, NFS kyun reject hua, exact
+`retention_period` + `compactor` config) `docs/object-storage-for-observability.md` mein hai —
+yeh do alag concerns hain: **config** batata hai kitni der rakhna hai, **infrastructure** batata
+hai kya woh data itni der survive karega.
+
+### 7.9 Dev Setup vs. Real Kubernetes/OKD Production
+
+Is module ka direct-push approach (`loki-logback-appender`) specifically host-based dev app ke
+liye sahi hai. **Yeh pattern real Kubernetes/OKD deployment mein bina soche-samjhe copy mat karo.**
+Waha standard, recommended approach yeh hai:
+
+1. App sirf **stdout** pe likhta hai (koi Loki-specific code nahi, koi direct HTTP push nahi) —
+   yeh Kubernetes-native convention hai, app ko kisi specific log backend se decouple karta hai
+2. Ek cluster-level agent (Promtail, ya Grafana Alloy — typically ek DaemonSet, har node pe ek)
+   har container ka stdout tail karke Loki ko bhejta hai
+3. Matlab `loki-logback-appender` dependency **sirf dev ke liye** hai — real prod profile mein
+   yeh carry forward nahi hona chahiye; prod path platform ke apne log collection pe depend karta
+   hai, app-level pushing pe nahi
+
+### 7.10 Key Takeaways
+
+1. **Loki logs ke liye wahi karta hai jo Prometheus metrics ke liye karta hai** — centralization,
+   ek jagah query karne ki capability.
+2. **Labels vs structured metadata** — same cardinality discipline jo Module 4/5 mein seekhi, ab
+   logs pe bhi apply hoti hai. High-cardinality values (traceId) kabhi label mat banao.
+3. **Direct push sirf dev-specific decision hai** — real Kubernetes/OKD mein stdout + cluster-level
+   agent hi sahi pattern hai.
+4. **Permission denied gotcha real hai, well-documented hai** — non-root container + fresh
+   root-owned volume = crash loop. Dev mein `user: "0:0"` se fix karo, prod mein proper chown-init
+   se.
+5. **Trace-to-logs correlation ek genuine payoff hai** — ek trace se seedha uske exact logs tak
+   jump karna, bina manually traceId copy-paste kiye — lekin yeh Module 8 (tracing) already sahi
+   se setup hone ke baad hi possible hai.
+6. **Retention aur durable storage alag concern hai** — config (`retention_period`) aur
+   infrastructure (MinIO/ODF vs local disk) dono chahiye, ek doosre ke bina kaam nahi karta.
 
 ---
 
