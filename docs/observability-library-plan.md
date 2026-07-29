@@ -1,15 +1,20 @@
 # Shared Observability Library — Future Plan
 ### A design doc to revisit later, not a guide to implement now
 
-> **Status: DEFERRED.** Do not start building this yet.
+> **Status: IMPLEMENTED.** Built as `observability-starter`
+> (group `io.observability`), source hosted at
+> `https://github.com/harshit9466/observability-starter` (personal, so it stays with its author
+> regardless of employer) and mirrored to the company's own Bitbucket for internal ownership.
+> Deliberately kept the group/package fully generic — no personal name, no platform reference —
+> so it can be reused across other services/projects, not just this one. Group ID and package
+> naming are independent of which git host the source lives in; see the conversation this was
+> built from for the full reasoning if it needs re-explaining later.
 >
-> **Revisit when BOTH of these are true:**
-> 1. All course modules (1–10) in `course/observability-course.md` are complete, AND
-> 2. At least 2–3 real BiharOne services have adopted this observability pattern
->
-> Building this against a single reference service (`spring-boot-starter`) would be premature —
-> it's not yet clear what's truly common across services vs. what only looks common because
-> we've only built it once.
+> **Honest note on timing**: condition 1 below (all 10 course modules complete) was met before
+> building. Condition 2 (2-3 real services already adopted) was NOT strictly met first — the
+> decision was made to build anyway given real-world time constraints, accepting the
+> premature-abstraction risk described below rather than waiting further. Re-validate the
+> candidate contents (§5) against real usage as actual services adopt it.
 
 ---
 
@@ -26,13 +31,13 @@ build is intentionally postponed (see Status above).
 
 ## 2. The Proposal
 
-Build a `biharone-observability-starter` — a Spring Boot **auto-configuration starter**, the
+Build an `observability-starter` — a Spring Boot **auto-configuration starter**, the
 same pattern as `spring-boot-starter-web` or `spring-boot-starter-data-jpa`. Any service adds
 one dependency and gets the observability baseline without copy-pasting files:
 
-```groovy
-// some-other-biharone-service/build.gradle
-implementation 'com.biharone:observability-starter:1.0.0'
+```kotlin
+// some-other-service/build.gradle.kts
+implementation("io.observability:observability-starter:1.0.0-SNAPSHOT")
 ```
 
 No manual wiring. Spring Boot's `AutoConfiguration.imports` mechanism auto-registers the beans.
@@ -91,7 +96,7 @@ counters/timers), the library should ship a small helper that enforces naming co
 instead of trying to author the metrics themselves:
 
 ```java
-// Candidate library class: com.biharone.observability.metrics.BusinessMetrics
+// Library class: io.observability.metrics.BusinessMetrics
 public final class BusinessMetrics {
     private BusinessMetrics() {}
 
