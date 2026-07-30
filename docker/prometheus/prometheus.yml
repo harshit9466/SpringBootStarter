@@ -65,3 +65,22 @@ scrape_configs:
         labels:
           service: 'spring-boot-starter'
           team: 'backend'
+
+  # -------------------------------------------------------------------
+  # Job 3: department-management-service (from the separate user-management
+  # repo/docker-compose project). Reached the same way as Job 2 — via
+  # host.docker.internal, since it publishes its own port to the host
+  # (9081:8081) rather than sharing this stack's "observability" network.
+  # -------------------------------------------------------------------
+  - job_name: 'department-management-service'
+
+    metrics_path: '/actuator/prometheus'
+
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+    static_configs:
+      - targets: ['host.docker.internal:9081']
+        labels:
+          service: 'department-management-service'
+          team: 'backend'
